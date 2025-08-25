@@ -1,10 +1,16 @@
 import os
+# Make sure InsightFace uses our local pre-downloaded models
+os.environ.setdefault("INSIGHTFACE_HOME", os.path.join(os.path.dirname(__file__), ".insightface"))
+
 import shutil
 import json
 import string
 from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_socketio import SocketIO
+# Ensure InsightFace uses the local repo folder for models (pre-downloaded via script)
+os.environ.setdefault("INSIGHTFACE_HOME", os.path.join(os.path.dirname(__file__), ".insightface"))
+
 from photo_sorter import (
     build_reference_embeddings,
     sort_photos_with_embeddings,
@@ -24,17 +30,7 @@ for p in (REFS_FOLDER, INBOX_FOLDER, SORTED_FOLDER, LOGS_FOLDER, MANIFESTS_FOLDE
     os.makedirs(p, exist_ok=True)
 
 app = Flask(__name__)
-#socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
-socketio = SocketIO(
-    app,
-    cors_allowed_origins="*",
-    async_mode="eventlet",
-    transports=["polling"]  # ← Force long-polling
-)
-
-# app = Flask(__name__, static_folder=".", static_url_path="")
-# socketio = SocketIO(app, cors_allowed_origins="*")
-
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
 _last_sorted_path = None  # for audit zips
 _last_manifest_path = None
@@ -414,4 +410,6 @@ def write_revert_scripts(manifest, bat_path, sh_path):
         pass
 
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    import os as _os
+    port = int(_os.environ.get("PORT", 5000))
+    socketio.run(app, host="0.0.0.0", port=port)
