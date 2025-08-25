@@ -1,0 +1,5 @@
+[build]
+nixpkgs = ["unzip", "bash", "libGL"]
+
+[deploy]
+start = "python app.py"
