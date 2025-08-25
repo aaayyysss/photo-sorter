@@ -1,4 +1,3 @@
-
 import os
 import gc
 import shutil
@@ -257,4 +256,5 @@ def sort_photos_with_embeddings(inbox_files: List[str], log_callback, min_cosine
     log_callback(f"📈 Summary — sorted: {counts['sorted']}, unsorted: {counts['unsorted']}, noface: {counts['noface']} / total {total}", "info")
     log_callback("🎉 Sorting complete!", "success")
     release_resources()
+
     return {"manifest": {"entries": manifest_entries, "summary": summary}}
