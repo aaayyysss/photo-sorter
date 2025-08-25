@@ -24,11 +24,16 @@ for p in (REFS_FOLDER, INBOX_FOLDER, SORTED_FOLDER, LOGS_FOLDER, MANIFESTS_FOLDE
     os.makedirs(p, exist_ok=True)
 
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+#socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode="eventlet",
+    transports=["polling"]  # ← Force long-polling
+)
 
 # app = Flask(__name__, static_folder=".", static_url_path="")
 # socketio = SocketIO(app, cors_allowed_origins="*")
-
 
 
 _last_sorted_path = None  # for audit zips
