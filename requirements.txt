@@ -9,3 +9,5 @@ pillow==10.3.0
 tqdm==4.66.4
 scikit-learn==1.5.1
 requests==2.32.3
+imageio>=2.33.0        # used by some insightface tools
+scikit-image>=0.22.0   # just in case some augmentation uses it
