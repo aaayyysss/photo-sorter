@@ -1,7 +1,6 @@
 {
   "build": {
-    "builder": "NIXPACKS",
-    "nixpacksConfigPath": "backend"
+    "builder": "NIXPACKS"
   },
   "deploy": {
     "startCommand": "python app.py",
