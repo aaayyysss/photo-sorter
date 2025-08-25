@@ -409,7 +409,11 @@ def write_revert_scripts(manifest, bat_path, sh_path):
     except Exception:
         pass
 
+#if __name__ == "__main__":
+ #   import os as _os
+  #  port = int(_os.environ.get("PORT", 5000))
+   # socketio.run(app, host="0.0.0.0", port=port)
 if __name__ == "__main__":
-    import os as _os
-    port = int(_os.environ.get("PORT", 5000))
-    socketio.run(app, host="0.0.0.0", port=port)
+    from flask_socketio import SocketIO
+    socketio = SocketIO(app, cors_allowed_origins="*")
+    socketio.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
