@@ -23,8 +23,13 @@ MANIFESTS_FOLDER = os.path.join(UPLOAD_FOLDER, "manifests")
 for p in (REFS_FOLDER, INBOX_FOLDER, SORTED_FOLDER, LOGS_FOLDER, MANIFESTS_FOLDER):
     os.makedirs(p, exist_ok=True)
 
-app = Flask(__name__, static_folder=".", static_url_path="")
-socketio = SocketIO(app, cors_allowed_origins="*")
+app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+
+# app = Flask(__name__, static_folder=".", static_url_path="")
+# socketio = SocketIO(app, cors_allowed_origins="*")
+
+
 
 _last_sorted_path = None  # for audit zips
 _last_manifest_path = None
@@ -403,5 +408,11 @@ def write_revert_scripts(manifest, bat_path, sh_path):
     except Exception:
         pass
 
+# if __name__ == "__main__":
+#    socketio.run(app, host="0.0.0.0", port=8000, debug=True)
+
+# ... your routes and Socket.IO emit() calls ...
+
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=8000, debug=True)
+    port = int(os.environ.get("PORT", 8000))
+    socketio.run(app, host="0.0.0.0", port=port)
