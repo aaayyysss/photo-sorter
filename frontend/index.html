@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Photo Sorting Tool</title>
+  <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background: #f8f8f8; margin: 20px; }
+    #log-container { background: #000; color: #fff; padding: 10px; height: 200px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .success { color: #00aa00; }
+    .warning { color: #bbaa00; }
+    .error { color: #cc3333; }
+    .info { color: #3388cc; }
+    .row { margin-bottom: 16px; }
+    label { font-weight: 600; }
+    button { padding: 8px 14px; font-weight: 600; }
+    input[type="range"] { width: 380px; }
+    small.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color:#888; }
+    .inline { display: inline-flex; align-items: center; gap: 10px; }
+    #panel { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+    #hist-card, #device-card, #artifacts-card, #inplace-card, #preview-card { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
+    #hist { width: 100%; height: 160px; border: 1px solid #ddd; background: #fafafa; }
+    select, input[type="text"] { padding: 6px; width: 380px; }
+    a.button { display:inline-block; padding:6px 10px; border:1px solid #888; border-radius:6px; text-decoration:none; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; font-size: 12px; }
+    th { background: #f3f3f3; }
+    /* Modal */
+    #picker-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display:none; align-items:center; justify-content:center; }
+    #picker-modal { background:#fff; border-radius:8px; width: 640px; max-height:70vh; overflow:auto; padding:12px; }
+    #picker-list { border:1px solid #ddd; height: 320px; overflow:auto; padding:6px; }
+    .dir-row { padding:6px 8px; border-bottom:1px dashed #eee; cursor:pointer; }
+    .dir-row:hover { background:#f7f7f7; }
+  </style>
+</head>
+<body>
+  <h2>📌 Photo Sorting Tool</h2>
+
+  <div id="inplace-card" class="row">
+    <h3 style="margin:0 0 6px 0;">In-place mode (operate on original folders)</h3>
+    <div class="inline">
+      <input type="checkbox" id="inplace">
+      <label for="inplace">Operate directly on server paths (no upload mirror)</label>
+    </div>
+    <div class="row">
+      <label>References path (server absolute path)</label><br>
+      <div class="inline">
+        <input type="text" id="refs-path" placeholder="e.g., D:\\Photos\\Refs  or  /Users/me/Photos/Refs">
+        <button data-target="refs-path" class="browse-btn">Browse…</button>
+      </div>
+      <div class="inline" style="margin-top:8px;">
+        <button id="build-refs-paths">Build References (paths)</button>
+        <input type="checkbox" id="delete-refs" checked>
+        <label for="delete-refs">Delete reference files after embedding</label>
+      </div>
+    </div>
+    <div class="row">
+      <label>Inbox path (server absolute path)</label><br>
+      <div class="inline">
+        <input type="text" id="inbox-path" placeholder="e.g., D:\\Photos\\Inbox  or  /Users/me/Photos/Inbox">
+        <button data-target="inbox-path" class="browse-btn">Browse…</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>Sorted path (optional; default = &lt;inbox&gt;/sorted)</label><br>
+      <div class="inline">
+        <input type="text" id="sorted-path" placeholder="Leave empty to use &lt;inbox&gt;/sorted">
+        <button data-target="sorted-path" class="browse-btn">Browse…</button>
+      </div>
+    </div>
+    <div class="inline">
+      <input type="checkbox" id="cleanup-uploads" checked>
+      <label for="cleanup-uploads">After sort, delete temporary uploads/ mirror if any</label>
+      <button id="validate-paths" style="margin-left:12px;">Validate Paths</button>
+      <button id="zip-audit" style="margin-left:12px;">Zip latest manifest + crops</button>
+    </div>
+    <div id="validate-summary" class="mono" style="margin-top:8px; color:#555;"></div>
+  </div>
+
+  <div class="row">
+    <h3>Classic mode (upload via browser)</h3>
+    <div class="row">
+      <label>Reference Folder</label><br>
+      <input type="file" id="refs-folder" webkitdirectory directory multiple>
+      <button id="build-refs">Build References</button>
+    </div>
+    <div class="row">
+      <label>Inbox Folder</label><br>
+      <input type="file" id="inbox-folder" webkitdirectory directory multiple>
+      <button id="upload-inbox">Load Inbox</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <h3>Matching & Output Settings</h3>
+    <div class="inline">
+      <label for="threshold">Global Cosine Threshold: <span id="threshold-value">32</span>% (<span id="threshold-float">0.32</span>)</label>
+    </div>
+    <input type="range" id="threshold" min="20" max="95" value="32" step="1">
+    <div class="inline" style="margin-top:6px;">
+      <input type="checkbox" id="adaptive-on">
+      <label for="adaptive-on">Use per-person adaptive thresholds (μ − k·σ)</label>
+      <label for="adaptive-k">k:</label>
+      <input type="range" id="adaptive-k" min="0" max="3" value="1" step="0.1" style="width:160px;">
+      <span id="adaptive-k-val">1.0</span>
+    </div>
+    <div class="inline" style="margin-top:6px;">
+      <input type="checkbox" id="copy-all" checked>
+      <label for="copy-all">Allow multi-person matches (for Link/Copy)</label>
+    </div>
+    <div class="inline" style="margin-top:6px;">
+      <input type="checkbox" id="save-crops" checked>
+      <label for="save-crops">Save face crops next to decisions (audit)</label>
+    </div>
+    <div class="inline" style="margin-top:6px;">
+      <label for="output-mode">Output:</label>
+      <select id="output-mode">
+        <option value="move" selected>Move (no duplicates)</option>
+        <option value="link">Link (hardlink/symlink)</option>
+        <option value="copy">Copy</option>
+      </select>
+      <input type="checkbox" id="dry-run">
+      <label for="dry-run">Dry run (no file operations)</label>
+    </div>
+    <small class="mono">In <b>Move</b> mode, multi-person becomes best-single.</small>
+  </div>
+
+  <div id="panel" class="row">
+    <div id="hist-card">
+      <div class="inline" style="justify-content: space-between; width: 100%;">
+        <h4 style="margin:0;">Live Cosine Histogram</h4>
+        <small class="mono">Faces: <span id="face-count">0</span> | Last: <span id="last-cos">–</span></small>
+      </div>
+      <canvas id="hist" width="460" height="160"></canvas>
+      <small class="mono">Bins: 0.00 → 1.00 (20 bins). Red line = global threshold.</small>
+    </div>
+    <div id="device-card">
+      <h4 style="margin:0;">Device</h4>
+      <div class="inline" style="margin-top:6px;">
+        <input type="checkbox" id="use-gpu">
+        <label for="use-gpu">Use GPU (requires onnxruntime-gpu + CUDA)</label>
+      </div>
+      <button id="apply-device" style="margin-top:8px;">Apply device setting</button>
+      <small class="mono">Rebuild references after switching device.</small>
+    </div>
+  </div>
+
+  <div id="artifacts-card" class="row">
+    <h4 style="margin:0 0 8px 0;">Latest Run Artifacts</h4>
+    <div class="inline">
+      <a id="manifest-link" class="button" href="#" target="_blank">Manifest (JSON)</a>
+      <a id="revert-bat-link" class="button" href="#" target="_blank">Revert (Windows .bat)</a>
+      <a id="revert-sh-link" class="button" href="#" target="_blank">Revert (macOS/Linux .sh)</a>
+      <button id="refresh-artifacts">Refresh</button>
+    </div>
+  </div>
+
+  <div id="preview-card" class="row" style="display:none;">
+    <h4 style="margin:0 0 8px 0;">Dry-run Preview (first 50)</h4>
+    <table>
+      <thead><tr><th>#</th><th>Decision</th><th>Person</th><th>Score</th><th>Source</th><th>Destination</th></tr></thead>
+      <tbody id="preview-body"></tbody>
+    </table>
+  </div>
+
+  <div class="row">
+    <button id="sort-photos">Sort Photos</button>
+    <button id="reset-run">Reset Run (clear uploads mirror)</button>
+  </div>
+
+  <h3>Live Logs</h3>
+  <div id="log-container"></div>
+
+  <!-- Folder picker modal -->
+  <div id="picker-backdrop">
+    <div id="picker-modal">
+      <div class="inline" style="justify-content: space-between; width:100%;">
+        <h4 style="margin:0;">Pick a folder</h4>
+        <button id="picker-close">Close</button>
+      </div>
+      <div class="inline" style="margin: 8px 0;">
+        <label>Path:</label>
+        <input type="text" id="picker-current" style="width: 460px;">
+        <button id="picker-up">Up</button>
+      </div>
+      <div id="picker-list"></div>
+      <div class="inline" style="margin-top:8px; justify-content:flex-end; width:100%;">
+        <button id="picker-choose">Choose this folder</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const socket = io();
+    function appendLog(msg, level="info") {
+      const container = document.getElementById("log-container");
+      const div = document.createElement("div");
+      div.textContent = msg;
+      div.className = level;
+      container.appendChild(div);
+      container.scrollTop = container.scrollHeight;
+    }
+    socket.on("log", data => appendLog(data.message, data.level));
+
+    // Histogram + threshold overlay
+    const histBins = 20;
+    let hist = new Array(histBins).fill(0);
+    let faceCount = 0;
+    const faceCountEl = document.getElementById("face-count");
+    const lastCosEl = document.getElementById("last-cos");
+    const canvas = document.getElementById("hist");
+    const ctx = canvas.getContext("2d");
+
+    function drawHist(threshFloat) {
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0,0,w,h);
+      const maxVal = Math.max(1, ...hist);
+      const barW = w / histBins;
+      for (let i=0; i<histBins; i++) {
+        const v = hist[i];
+        const barH = Math.round((v / maxVal) * (h - 24));
+        const x = i * barW + 2;
+        const y = h - barH - 2;
+        ctx.fillStyle = "#4a90e2";
+        ctx.fillRect(x, y, barW - 4, barH);
+      }
+      ctx.strokeStyle = "#ccc";
+      ctx.beginPath();
+      ctx.moveTo(0, h-1);
+      ctx.lineTo(w, h-1);
+      ctx.stroke();
+      if (typeof threshFloat === 'number') {
+        const xline = Math.min(w-1, Math.max(0, Math.floor(threshFloat * w)));
+        ctx.strokeStyle = "#d33";
+        ctx.beginPath();
+        ctx.moveTo(xline, 0);
+        ctx.lineTo(xline, h);
+        ctx.stroke();
+      }
+    }
+    drawHist(parseInt(document.getElementById("threshold").value)/100);
+
+    socket.on("metric", data => {
+      const cos = typeof data.cos === "number" ? data.cos : NaN;
+      if (isNaN(cos)) return;
+      lastCosEl.textContent = cos.toFixed(3);
+      faceCount += 1;
+      faceCountEl.textContent = faceCount;
+      const idx = Math.min(histBins-1, Math.max(0, Math.floor(cos * histBins)));
+      hist[idx] += 1;
+      drawHist(parseInt(document.getElementById("threshold").value)/100);
+    });
+
+    // Threshold UI
+    const thresholdSlider = document.getElementById("threshold");
+    const thresholdLabel = document.getElementById("threshold-value");
+    const thresholdFloat = document.getElementById("threshold-float");
+    function updateThresh(){
+      thresholdLabel.textContent = thresholdSlider.value;
+      const f = parseInt(thresholdSlider.value)/100;
+      thresholdFloat.textContent = f.toFixed(2);
+      drawHist(f);
+    }
+    thresholdSlider.addEventListener("input", updateThresh);
+    updateThresh();
+
+    // Adaptive k UI
+    const kSlider = document.getElementById("adaptive-k");
+    const kLabel = document.getElementById("adaptive-k-val");
+    function updateK(){ kLabel.textContent = parseFloat(kSlider.value).toFixed(1); }
+    kSlider.addEventListener("input", updateK);
+    updateK();
+
+    // Classic mode build references
+    document.getElementById("build-refs").onclick = async () => {
+      if (document.getElementById("inplace").checked) {
+        appendLog("In-place mode is ON. Use 'Build References (paths)' above.", "warning");
+        return;
+      }
+      const files = document.getElementById("refs-folder").files;
+      const formData = new FormData();
+      for (const file of files) formData.append("ref_files", file, file.webkitRelativePath || file.name);
+      const res = await fetch("/build_references", { method: "POST", body: formData });
+      const data = await res.json();
+      appendLog(data.message, data.status === "success" ? "success" : "error");
+    };
+
+    // In-place build references (paths)
+    document.getElementById("build-refs-paths").onclick = async () => {
+      const refsPath = document.getElementById("refs-path").value.trim();
+      if (!refsPath) { appendLog("Please enter a References path.", "warning"); return; }
+      const deleteRefs = document.getElementById("delete-refs").checked;
+      const res = await fetch("/build_references_inplace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refs_path: refsPath, delete_refs: deleteRefs })
+      });
+      const data = await res.json();
+      appendLog(data.message, data.status === "success" ? "success" : "error");
+    };
+
+    // Classic upload inbox
+    document.getElementById("upload-inbox").onclick = async () => {
+      if (document.getElementById("inplace").checked) {
+        appendLog("In-place mode is ON. Enter Inbox path above; no upload needed.", "info");
+        return;
+      }
+      const files = document.getElementById("inbox-folder").files;
+      const formData = new FormData();
+      for (const file of files) formData.append("inbox_files", file, file.webkitRelativePath || file.name);
+      const res = await fetch("/upload_inbox", { method: "POST", body: formData });
+      const data = await res.json();
+      appendLog(data.message, data.status === "success" ? "success" : "error");
+    };
+
+    // Manual reset (uploads/* only)
+    document.getElementById("reset-run").onclick = async () => {
+      const res = await fetch("/reset_run", { method: "POST" });
+      const data = await res.json();
+      appendLog(data.message, data.status === "success" ? "success" : "error");
+    };
+
+    // Apply device (GPU/CPU)
+    document.getElementById("apply-device").onclick = async () => {
+      const useGPU = document.getElementById("use-gpu").checked;
+      const res = await fetch("/set_device", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ use_gpu: useGPU })
+      });
+      const data = await res.json();
+      appendLog(data.message, data.status === "success" ? "success" : "error");
+    };
+
+    // Artifacts panel
+    async function refreshArtifacts() {
+      const res = await fetch("/latest_artifacts");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.manifest_url) document.getElementById("manifest-link").href = data.manifest_url;
+      if (data.revert_bat_url) document.getElementById("revert-bat-link").href = data.revert_bat_url;
+      if (data.revert_sh_url) document.getElementById("revert-sh-link").href = data.revert_sh_url;
+    }
+    document.getElementById("refresh-artifacts").onclick = refreshArtifacts;
+    refreshArtifacts();
+
+    // Validate paths
+    document.getElementById("validate-paths").onclick = async () => {
+      const refsPath = document.getElementById("refs-path").value.trim();
+      const inboxPath = document.getElementById("inbox-path").value.trim();
+      const sortedPath = document.getElementById("sorted-path").value.trim();
+      const res = await fetch("/validate_paths", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refs_path: refsPath, inbox_path: inboxPath, sorted_path: sortedPath })
+      });
+      const data = await res.json();
+      const el = document.getElementById("validate-summary");
+      if (data.status === "success") {
+        const r = data.refs, i = data.inbox, s = data.sorted;
+        el.textContent = `Refs: ${r.exists?'✓':'✗'} (${r.count} imgs) | Inbox: ${i.exists?'✓':'✗'} (${i.count} imgs) | Sorted: ${s.exists?'✓':'✗'} (${s.count} imgs)`;
+      } else {
+        el.textContent = data.message || "Validation failed";
+      }
+    };
+
+    // Zip audit
+    document.getElementById("zip-audit").onclick = async () => {
+      const res = await fetch("/zip_latest_audit");
+      const data = await res.json();
+      if (data.status === "success" && data.url) {
+        window.open(data.url, "_blank");
+      } else {
+        appendLog(data.message || "Could not create audit ZIP", "warning");
+      }
+    };
+
+    // Sort photos (both modes)
+    document.getElementById("sort-photos").onclick = async () => {
+      const inplace = document.getElementById("inplace").checked;
+      const thresholdPct = parseInt(document.getElementById("threshold").value);
+      const multiPolicy = document.getElementById("copy-all").checked ? "copy_all" : "best_single";
+      const saveCrops = document.getElementById("save-crops").checked;
+      const outputMode = document.getElementById("output-mode").value;
+      const dryRun = document.getElementById("dry-run").checked;
+      const adaptiveOn = document.getElementById("adaptive-on").checked;
+      const adaptiveK = parseFloat(document.getElementById("adaptive-k").value);
+      const cleanupUploads = document.getElementById("cleanup-uploads").checked;
+      const body = {
+        threshold_pct: thresholdPct,
+        multi_face_policy: multiPolicy,
+        save_crops: saveCrops,
+        output_mode: outputMode,
+        dry_run: dryRun,
+        use_adaptive: adaptiveOn,
+        adaptive_k: adaptiveK,
+        inplace,
+        cleanup_uploads: cleanupUploads
+      };
+      if (inplace) {
+        body.refs_path = document.getElementById("refs-path").value.trim();
+        body.inbox_path = document.getElementById("inbox-path").value.trim();
+        body.sorted_path = document.getElementById("sorted-path").value.trim();
+      }
+      const res = await fetch("/sort_photos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      appendLog(data.message, data.status === "success" ? "success" : "error");
+      if (data.status === "success") {
+        if (data.manifest_url) document.getElementById("manifest-link").href = data.manifest_url;
+        if (data.revert_bat_url) document.getElementById("revert-bat-link").href = data.revert_bat_url;
+        if (data.revert_sh_url) document.getElementById("revert-sh-link").href = data.revert_sh_url;
+        const preview = data.preview || [];
+        const tbody = document.getElementById("preview-body");
+        tbody.innerHTML = "";
+        if (dryRun && preview.length) {
+          document.getElementById("preview-card").style.display = "block";
+          preview.slice(0,50).forEach((row, idx) => {
+            const tr = document.createElement("tr");
+            const scoreCell = (typeof row.score === "number") ? row.score.toFixed(3) : "";
+            const srcName = row.src ? row.src.split(/[\\/]/).pop() : "";
+            const dstName = row.dst ? row.dst.split(/[\\/]/).pop() : "";
+            tr.innerHTML = "<td>"+(idx+1)+"</td><td>"+(row.decision||"")+"</td><td>"+(row.person||"")+"</td><td>"+scoreCell+"</td><td title='"+(row.src||"")+"'>"+srcName+"</td><td title='"+(row.dst||"")+"'>"+dstName+"</td>";
+            tbody.appendChild(tr);
+          });
+        } else {
+          document.getElementById("preview-card").style.display = "none";
+        }
+      }
+    };
+
+    // --- Folder picker (server-side browser) ---
+    let pickerTargetInput = null;
+    const pickerBackdrop = document.getElementById("picker-backdrop");
+    const pickerModal = document.getElementById("picker-modal");
+    const pickerList = document.getElementById("picker-list");
+    const pickerCurrent = document.getElementById("picker-current");
+
+    async function listRoots() {
+      const res = await fetch("/roots");
+      const data = await res.json();
+      return data.roots || [];
+    }
+
+    async function listDir(path) {
+      const res = await fetch("/browse?path=" + encodeURIComponent(path||""));
+      return await res.json();
+    }
+
+    function openPicker(forInputId) {
+      pickerTargetInput = document.getElementById(forInputId);
+      pickerBackdrop.style.display = "flex";
+      const start = pickerTargetInput.value.trim();
+      if (start) { pickerCurrent.value = start; refreshPicker(start); }
+      else { showRoots(); }
+    }
+
+    async function showRoots() {
+      pickerCurrent.value = "";
+      const roots = await listRoots();
+      renderList(roots.map(r => ({ name: r, path: r })));
+    }
+
+    async function refreshPicker(path) {
+      const data = await listDir(path);
+      if (data.error) { appendLog(data.error, "warning"); return; }
+      renderList(data.dirs.map(d => ({ name: d.name, path: d.path })));
+    }
+
+    function renderList(items) {
+      pickerList.innerHTML = "";
+      if (!items || !items.length) {
+        pickerList.innerHTML = "<div class='muted'>No subfolders</div>";
+        return;
+      }
+      items.forEach(it => {
+        const div = document.createElement("div");
+        div.className = "dir-row";
+        div.textContent = it.name || it.path;
+        div.onclick = () => {
+          pickerCurrent.value = it.path;
+          refreshPicker(it.path);
+        };
+        pickerList.appendChild(div);
+      });
+    }
+
+    document.querySelectorAll(".browse-btn").forEach(btn => {
+      btn.addEventListener("click", e => {
+        const targetId = e.currentTarget.getAttribute("data-target");
+        openPicker(targetId);
+      });
+    });
+
+    document.getElementById("picker-close").onclick = () => { pickerBackdrop.style.display = "none"; };
+    document.getElementById("picker-up").onclick = () => {
+      let p = pickerCurrent.value.trim();
+      if (!p) { showRoots(); return; }
+      const norm = p.replace(/\\/g, "/");
+      const cut = norm.lastIndexOf("/");
+      if (cut <= 0) { showRoots(); return; }
+      const parent = norm.slice(0, cut);
+      pickerCurrent.value = parent;
+      refreshPicker(parent);
+    };
+    document.getElementById("picker-choose").onclick = () => {
+      if (pickerTargetInput) { pickerTargetInput.value = pickerCurrent.value.trim(); }
+      pickerBackdrop.style.display = "none";
+    };
+  </script>
+</body>
+</html>
