@@ -3,3 +3,4 @@ flask-socketio
 opencv-python
 numpy
 insightface
+onnxruntime
