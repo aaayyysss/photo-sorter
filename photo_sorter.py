@@ -1,6 +1,7 @@
 import os
 import gc
 import shutil
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Tuple, Optional
 
@@ -10,19 +11,16 @@ from insightface.app import FaceAnalysis
 
 # Load model directory just once
 MODEL_DIR = os.path.join(os.path.dirname(__file__), ".insightface")
-print("⏳ Initializing FaceAnalysis...")
-
-t0 = time.time()
-face_app = FaceAnalysis(name="buffalo_l", root=MODEL_DIR)
-face_app.prepare(ctx_id=-1)  # CPU only, avoids CUDA warnings
-print(f"✅ FaceAnalysis loaded in {time.time() - t0:.2f}s")
-
+face_app = None
 
 def _init_face_app():
     global face_app
     if face_app is None:
+        print("⏳ Initializing FaceAnalysis...")   
+        t0 = time.time()
         face_app = FaceAnalysis(name="buffalo_l", root=MODEL_DIR)
         face_app.prepare(ctx_id=-1)  # Force CPU, avoid GPU warnings
+        print(f"✅ FaceAnalysis loaded in {time.time() - t0:.2f}s")
     return face_app, True, "FaceAnalysis initialized"
 
 def set_device(use_gpu: bool):
@@ -260,4 +258,5 @@ def sort_photos_with_embeddings(inbox_files: List[str], log_callback, min_cosine
     release_resources()
 
     return {"manifest": {"entries": manifest_entries, "summary": summary}}
+
 
