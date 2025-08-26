@@ -8,7 +8,6 @@ import string
 from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_socketio import SocketIO
-from mymodule import app  # import AFTER models are loaded
 
 from photo_sorter import (
     build_reference_embeddings,
@@ -16,6 +15,7 @@ from photo_sorter import (
     release_resources,
     save_ref_artifacts,
     set_device,
+    face_app
 )
 
 UPLOAD_FOLDER = "uploads"
@@ -59,6 +59,9 @@ def emit_metric(value: float):
         pass
 
 @app.route("/")
+def health_check():
+    return jsonify({"status": "ok", "message": "Photo Sorter API is running!"})
+    
 def serve_index():
     return send_from_directory(".", "index.html")
 
@@ -411,5 +414,6 @@ def write_revert_scripts(manifest, bat_path, sh_path):
 if __name__ == "__main__":
     socketio = SocketIO(app, cors_allowed_origins="*")
     socketio.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), allow_unsafe_werkzeug=True, debug=False)
+
 
 
