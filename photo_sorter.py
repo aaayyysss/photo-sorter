@@ -10,7 +10,13 @@ from insightface.app import FaceAnalysis
 
 # Load model directory just once
 MODEL_DIR = os.path.join(os.path.dirname(__file__), ".insightface")
-face_app = None
+print("⏳ Initializing FaceAnalysis...")
+
+t0 = time.time()
+face_app = FaceAnalysis(name="buffalo_l", root=MODEL_DIR)
+face_app.prepare(ctx_id=-1)  # CPU only, avoids CUDA warnings
+print(f"✅ FaceAnalysis loaded in {time.time() - t0:.2f}s")
+
 
 def _init_face_app():
     global face_app
@@ -18,11 +24,9 @@ def _init_face_app():
         face_app = FaceAnalysis(name="buffalo_l", root=MODEL_DIR)
         face_app.prepare(ctx_id=-1)  # Force CPU, avoid GPU warnings
     return face_app, True, "FaceAnalysis initialized"
-    
-app, _ok, _msg = _init_face_app()
 
 def set_device(use_gpu: bool):
-    global app
+    global face_app
     os.environ["FACE_USE_GPU"] = "1" if use_gpu else "0"
     app, ok, msg = _init_face_app(use_gpu=use_gpu)
     return ok, msg
@@ -256,3 +260,4 @@ def sort_photos_with_embeddings(inbox_files: List[str], log_callback, min_cosine
     release_resources()
 
     return {"manifest": {"entries": manifest_entries, "summary": summary}}
+
