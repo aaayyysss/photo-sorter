@@ -1,21 +1,18 @@
-#!/bin/bash
+set -e
 
-echo "📦 Checking buffalo_l model..."
+echo "📥 Creating buffalo_l model directory..."
+mkdir -p .insightface/models/buffalo_l
 
-if [ ! -d ".insightface/models/buffalo_l" ]; then
-    echo "📥 Downloading buffalo_l from Google Drive..."
+cd .insightface/models/buffalo_l
 
-    mkdir -p .insightface/models/
+echo "📥 Downloading model files from Google Drive..."
 
-    # Replace this with your actual folder ID
-    FOLDER_ID=1RgwYMdbP1VxOPWtjmJfvOXzoAfKh4GXf
+# Replace these links with your actual direct download links
+curl -L -o config.yaml 'https://drive.google.com/file/d/1Ldp7BATcllpe_yGjJzrTBFvHHsgtSpV5/view?usp=drive_link'
+curl -L -o det_10g.onnx 'https://drive.google.com/file/d/1Px5xAjdBzYZjvGGEsZEBm5bDi--1NU6u/view?usp=drive_link'
+curl -L -o genderage.onnx 'https://drive.google.com/file/d/1VreU-_OqA-oeiR9V583Q_LPh_1sld8Yk/view?usp=drive_link'
+curl -L -o w600k_r50.onnx 'https://drive.google.com/file/d/1EbNrHaSieVeb7Hu399WHDDwElTKcEyKD/view?usp=drive_link'
+curl -L -o 1k3d68.onnx 'https://drive.google.com/file/d/1gWLXugVbjXSE57QsVCpBmN_tyJpXlsAc/view?usp=drive_link'
+curl -L -o 2d106det.onnx 'https://drive.google.com/file/d/1XrOeD77P53jFE36Qd41iPECidfcYhWqw/view?usp=drive_link'
 
-    # Install gdown if missing
-    if ! command -v gdown &> /dev/null; then
-        pip install gdown
-    fi
-
-    gdown --folder "https://drive.google.com/drive/folders/$FOLDER_ID" -O .insightface/models/
-else
-    echo "✅ buffalo_l already present"
-fi
+echo "✅ All files downloaded successfully."
