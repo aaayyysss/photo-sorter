@@ -1,5 +1,5 @@
 [build]
-nixpacks = { packages = ["bash", "libGL"] }
+nixpkgs = ["unzip", "bash", "libGL"]
 
 [deploy]
 start = "python app.py"
