@@ -16,7 +16,7 @@ def _init_face_app():
     model_path = os.path.join(os.path.dirname(__file__), ".insightface")
     app = FaceAnalysis(name="buffalo_l", root=model_path)
     app.prepare(ctx_id=0)
-    return app, True, "FaceAnalysis app initialized"
+    return app, True, "FaceAnalysis initialized successfully"
 
 app, _ok, _msg = _init_face_app()
 
@@ -255,5 +255,6 @@ def sort_photos_with_embeddings(inbox_files: List[str], log_callback, min_cosine
     release_resources()
 
     return {"manifest": {"entries": manifest_entries, "summary": summary}}
+
 
 
