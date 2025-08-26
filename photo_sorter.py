@@ -8,18 +8,14 @@ import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
 
-def _init_face_app(use_gpu: Optional[bool] = None):
-    if use_gpu is None:
-        use_gpu = os.environ.get("FACE_USE_GPU", "0") in ("1","true","True")
-    try:
-        app = FaceAnalysis(name="buffalo_l")
-        ctx_id = 0 if use_gpu else -1
-        app.prepare(ctx_id=ctx_id, det_size=(640, 640))
-        return app, True, f"FaceAnalysis initialized (backend={'GPU' if use_gpu else 'CPU'})"
-    except Exception as e:
-        app = FaceAnalysis(name="buffalo_l")
-        app.prepare(ctx_id=-1, det_size=(640, 640))
-        return app, False, f"FaceAnalysis initialized on CPU (fallback). Reason: {e}"
+from insightface.app import FaceAnalysis
+import os
+
+def _init_face_app():
+    model_path = os.path.expanduser("~/.insightface/models/buffalo_l")  # Full path to your local model
+    app = FaceAnalysis(name="buffalo_l", root=model_path)
+    app.prepare(ctx_id=0)
+    return app, True, "FaceAnalysis app initialized"
 
 app, _ok, _msg = _init_face_app()
 
@@ -258,3 +254,4 @@ def sort_photos_with_embeddings(inbox_files: List[str], log_callback, min_cosine
     release_resources()
 
     return {"manifest": {"entries": manifest_entries, "summary": summary}}
+
