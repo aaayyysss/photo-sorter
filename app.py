@@ -8,8 +8,7 @@ import string
 from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_socketio import SocketIO
-# Ensure InsightFace uses the local repo folder for models (pre-downloaded via script)
-os.environ.setdefault("INSIGHTFACE_HOME", os.path.join(os.path.dirname(__file__), ".insightface"))
+from mymodule import app  # import AFTER models are loaded
 
 from photo_sorter import (
     build_reference_embeddings,
@@ -409,12 +408,8 @@ def write_revert_scripts(manifest, bat_path, sh_path):
     except Exception:
         pass
 
-#if __name__ == "__main__":
- #   import os as _os
-  #  port = int(_os.environ.get("PORT", 5000))
-   # socketio.run(app, host="0.0.0.0", port=port)
 if __name__ == "__main__":
-    from flask_socketio import SocketIO
     socketio = SocketIO(app, cors_allowed_origins="*")
-    socketio.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), allow_unsafe_werkzeug=True)
+    socketio.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), allow_unsafe_werkzeug=True, debug=False)
+
 
