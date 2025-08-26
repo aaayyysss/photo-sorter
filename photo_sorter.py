@@ -256,7 +256,3 @@ def sort_photos_with_embeddings(inbox_files: List[str], log_callback, min_cosine
     release_resources()
 
     return {"manifest": {"entries": manifest_entries, "summary": summary}}
-
-
-
-
