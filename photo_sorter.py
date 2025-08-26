@@ -8,16 +8,17 @@ import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
 
-from insightface.app import FaceAnalysis
-import os
+# Load model directory just once
+MODEL_DIR = os.path.join(os.path.dirname(__file__), ".insightface")
+face_app = None
 
 def _init_face_app():
-    #model_path = os.path.expanduser("~/.insightface/models/buffalo_l")  # Full path to your local model
-    model_path = os.path.join(os.path.dirname(__file__), ".insightface")
-    app = FaceAnalysis(name="buffalo_l", root=model_path)
-    app.prepare(ctx_id=0)
-    return app, True, "FaceAnalysis initialized successfully"
-
+    global face_app
+    if face_app is None:
+        face_app = FaceAnalysis(name="buffalo_l", root=MODEL_DIR)
+        face_app.prepare(ctx_id=-1)  # Force CPU, avoid GPU warnings
+    return face_app, True, "FaceAnalysis initialized"
+    
 app, _ok, _msg = _init_face_app()
 
 def set_device(use_gpu: bool):
@@ -255,6 +256,7 @@ def sort_photos_with_embeddings(inbox_files: List[str], log_callback, min_cosine
     release_resources()
 
     return {"manifest": {"entries": manifest_entries, "summary": summary}}
+
 
 
 
