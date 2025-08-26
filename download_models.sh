@@ -1,21 +1,21 @@
 #!/bin/bash
-set -e
 
-MODEL_DIR=".insightface/models/buffalo_l"
-MODEL_ZIP=".insightface/models/buffalo_l.zip"
+echo "📦 Checking buffalo_l model..."
 
-if [ ! -d "$MODEL_DIR" ]; then
-    echo "📦 buffalo_l model missing — downloading..."
-    mkdir -p .insightface/models
+if [ ! -d ".insightface/models/buffalo_l" ]; then
+    echo "📥 Downloading buffalo_l from Google Drive..."
 
-    # TODO: Replace YOUR_FILE_ID below with your Google Drive file ID
-    FILE_ID="1QCBCygyQXGPZcn_veQj2uBObHFgp-n2k"
-    URL="https://drive.google.com/uc?export=download&id=${FILE_ID}"
+    mkdir -p .insightface/models/
 
-    curl -L "$URL" -o "$MODEL_ZIP"
-    unzip -o "$MODEL_ZIP" -d ".insightface/models/"
-    rm "$MODEL_ZIP"
-    echo "✅ buffalo_l model ready."
+    # Replace this with your actual folder ID
+    FOLDER_ID=1RgwYMdbP1VxOPWtjmJfvOXzoAfKh4GXf
+
+    # Install gdown if missing
+    if ! command -v gdown &> /dev/null; then
+        pip install gdown
+    fi
+
+    gdown --folder "https://drive.google.com/drive/folders/$FOLDER_ID" -O .insightface/models/
 else
-    echo "✅ buffalo_l model already exists."
+    echo "✅ buffalo_l already present"
 fi
