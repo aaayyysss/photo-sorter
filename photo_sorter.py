@@ -12,7 +12,8 @@ from insightface.app import FaceAnalysis
 import os
 
 def _init_face_app():
-    model_path = os.path.expanduser("~/.insightface/models/buffalo_l")  # Full path to your local model
+    #model_path = os.path.expanduser("~/.insightface/models/buffalo_l")  # Full path to your local model
+    model_path = os.path.join(os.path.dirname(__file__), ".insightface")
     app = FaceAnalysis(name="buffalo_l", root=model_path)
     app.prepare(ctx_id=0)
     return app, True, "FaceAnalysis app initialized"
@@ -254,4 +255,5 @@ def sort_photos_with_embeddings(inbox_files: List[str], log_callback, min_cosine
     release_resources()
 
     return {"manifest": {"entries": manifest_entries, "summary": summary}}
+
 
