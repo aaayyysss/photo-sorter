@@ -95,7 +95,6 @@ DB_PATH = "reference_data.db"
 
 # ---- Utilities -----------------------------------------------
 
-
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
@@ -322,20 +321,21 @@ class UndoStack:
         self._log = log_cb or (lambda *a, **k: None)
 
     def push(self, action: dict):
-        # action example:
-        # {"type":"delete_ref","label": str,"path": str}
-        # {"type":"add_ref","label": str,"path": str}
-        # {"type":"delete_label","label": str,"paths": [str, ...]}
+        """
+        action examples:
+          {"type": "delete_ref",   "label": str, "path": str}
+          {"type": "delete_label", "label": str, "paths": [str, ...], "threshold": float|None, "folder": str|None}
+        """
         self.stack.append(action)
 
     def pop(self):
-        if not self._stack:
+        if not self.stack:
             self._log("ℹ️ Nothing to undo.")
             return None
-        return self._stack.pop()
+        return self.stack.pop()
 
     def clear(self):
-        self._stack.clear()
+        self.stack.clear()
 
 # ---- Reference Browser (top strip) ---------------------------
 
@@ -347,9 +347,7 @@ class ReferenceBrowser(ttk.Frame):
     - Delete Label removes all entries for the chosen label.
     """
     def __init__(self, master, gui_log, rebuild_embeddings_async, push_undo, *args, **kwargs):
-    #def __init__(self, master, app, gui_log, rebuild_embeddings_async, *args, **kwargs):
         super().__init__(master, *args, **kwargs)
-        #self.app = app                       # <-- keep reference to ImageRangerGUI
         self.gui_log = gui_log
         self.rebuild_embeddings_async = rebuild_embeddings_async
         self.push_undo = push_undo
@@ -477,7 +475,7 @@ class ReferenceBrowser(ttk.Frame):
                     delete_reference(path)
                     deleted += 1
                     # push to Undo (now using self.app)
-                    self.app.undo.push({"type": "delete_ref", "label": label, "path": path})
+                    self.push_undo({"type": "delete_ref", "label": label, "path": path})
                 except Exception as e:
                     self.gui_log(f"⚠️ Could not delete '{path}': {e}")
                     
@@ -562,10 +560,8 @@ class ReferenceBrowser(ttk.Frame):
         self.load_images()
     
         # PARTIAL rebuild for just this label (flush it from memory)
-        try:
-            self.rebuild_embeddings_async(only_label=label)
-        except Exception:
-            self.rebuild_embeddings_async()
+       
+        self.rebuild_embeddings_async(only_label=label)
 
     def rename_label(self):
         current = self.label_filter.get()
@@ -1124,61 +1120,14 @@ class ImageRangerGUI:
 
 
 
-    #def rebuild_embeddings_async(self, only_label: str | None = None):
-    #               if self._rebuild_pending:
-    #                        self.root.after_cancel(self._rebuild_pending)
-    #               self._rebuild_pending = self.root.after(200, lambda: self._rebuild_do(only_label))
-
     def rebuild_embeddings_async(self, only_label: str | None = None):
-        # cancel any scheduled (not yet executed) rebuild
         if self._rebuild_pending:
             try:
                 self.root.after_cancel(self._rebuild_pending)
             except Exception:
                 pass
             self._rebuild_pending = None
-    
-        # schedule one rebuild (debounce)
-        self._rebuild_pending = self.root.after(
-            200,
-            lambda ol=only_label: self._rebuild_do(ol)
-        )
-    
-    def _rebuild_do(self, only_label: str | None):
-        self._rebuild_pending = None
-    
-        # coalesce if one is already running
-        if self._rebuild_running:
-            if only_label is None:
-                self._rebuild_next_label = None
-            else:
-                self._rebuild_next_label = self._rebuild_next_label if self._rebuild_next_label is None else only_label
-            return
-    
-        self._rebuild_running = True
-    
-        def _worker(ol):
-            try:
-                model_dir = os.path.join(os.path.dirname(__file__), "buffalo_l")
-                self.gui_log("⚙️ Rebuilding reference embeddings…")
-                try:
-                    # prefer new signature (supports partial)
-                    build_reference_embeddings_from_db(DB_PATH, model_dir, self.gui_log, only_label=ol)
-                except TypeError:
-                    # backward compat
-                    build_reference_embeddings_from_db(DB_PATH, model_dir, self.gui_log)
-                self.gui_log("✅ Embeddings rebuilt.")
-            except Exception as e:
-                self.gui_log(f"❌ Embedding rebuild failed: {e}")
-            finally:
-                self._rebuild_running = False
-                if self._rebuild_next_label is not None:
-                    nxt = self._rebuild_next_label
-                    self._rebuild_next_label = None
-                    self.rebuild_embeddings_async(nxt)
-    
-        threading.Thread(target=_worker, args=(only_label,), daemon=True).start()
-
+        self._rebuild_pending = self.root.after(200, lambda ol=only_label: self._rebuild_do(ol))
     
     def _build_menu(self):
         menubar = tk.Menu(self.root)
@@ -1395,13 +1344,11 @@ class ImageRangerGUI:
         )
         tk.Label(mode_frame, text=rules, justify="left", anchor="w", fg="#444", wraplength=320).pack(anchor=tk.W, pady=(6, 2))
 
-        #self.reference_browser = ReferenceBrowser(self.root, self.gui_log, self.rebuild_embeddings_async)
-        #self.reference_browser = ReferenceBrowser(self.root, self, self.gui_log, self.rebuild_embeddings_async)
         self.reference_browser = ReferenceBrowser(
-        self.root,
-        self.gui_log,
-        self.rebuild_embeddings_async,  # pass method
-        self.undo.push,                 # pass Undo push function
+            self.root,
+            self.gui_log,
+            self.rebuild_embeddings_async,  # pass method
+            self.undo.push,                 # pass Undo push function
         )
 
         self.reference_browser.pack(fill=tk.X, padx=10, pady=5)
@@ -1446,18 +1393,19 @@ class ImageRangerGUI:
             folder    = action.get("folder")
     
             try:
+                # ensure folder exists (prefer previously stored folder, else default under Reference Root)
                 if not folder or not isinstance(folder, str) or not folder.strip():
                     folder = os.path.join(get_reference_root(), lbl)
                 try:
                     os.makedirs(folder, exist_ok=True)
                 except Exception:
                     pass
-    
+                # restore label metadata (folder + threshold)
                 try:
                     insert_or_update_label(lbl, folder, threshold)
                 except Exception:
                     pass
-    
+                # restore all references
                 restored = 0
                 for p in paths:
                     try:
@@ -1465,12 +1413,14 @@ class ImageRangerGUI:
                         restored += 1
                     except Exception:
                         pass
-    
+                # UI refresh
                 self.reference_browser.refresh_label_list(auto_select=False)
                 self.reference_browser.label_filter.set(lbl)
                 self.reference_browser.load_images()
+
+                # partial rebuild for restored label
                 self.rebuild_embeddings_async(only_label=lbl)
-    
+
                 self.gui_log(f"↩ Restored label '{lbl}' with {restored} reference(s).")
             except Exception as e:
                 self.gui_log(f"Undo failed (delete_label): {e}")
