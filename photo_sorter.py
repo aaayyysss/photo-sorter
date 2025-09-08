@@ -20,10 +20,70 @@ ref_embeddings = {}
 # ---- Global model cache (loaded once per process) --------------
 
 _MODEL_CACHE = {
+    "dir": None,
     "app": None,         # cached FaceAnalysis instance
     "model_dir": None,   # path it was built from
     "providers": None,   # ORT providers used
 }
+
+def load_model_cached(model_dir, log_callback):
+    """Return cached FaceAnalysis if model_dir matches; else load once and cache."""
+    global _model_cache
+    if _model_cache["app"] is not None and _model_cache["dir"] == model_dir:
+        return _model_cache["app"]
+    app = load_model(model_dir, log_callback)
+    _model_cache = {"dir": model_dir, "app": app}
+    return app
+
+def build_reference_embeddings_for_label(db_path, model_dir, label, log_callback):
+    """
+    Rebuild embeddings only for a single label.
+    - If that label has no references, it will be removed from the in-memory map.
+    """
+    global ref_embeddings
+
+    app = load_model_cached(model_dir, log_callback)
+    if app is None:
+        return
+
+    try:
+        references = [r for r in get_all_references() if r[1] == label]
+    except Exception as e:
+        log_callback(f"❌ Failed to fetch references: {e}")
+        return
+
+    if not references:
+        # no refs -> drop from cache
+        if label in ref_embeddings:
+            ref_embeddings.pop(label, None)
+            log_callback(f"ℹ️ No refs for '{label}'. Removed from cache.")
+        return
+
+    vecs = []
+    for _ref_id, _lbl, img_path in references:
+        if not os.path.isfile(img_path):
+            log_callback(f"⚠️ Missing reference file, skipping: {img_path}")
+            continue
+        try:
+            img = cv2.imdecode(np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if img is None:
+                raise ValueError("Image not readable")
+            faces = app.get(img)
+            if not faces:
+                log_callback(f"⚠️ No face found in reference: {img_path}")
+                continue
+            embeddings = [f.embedding for f in faces]
+            vecs.append(np.mean(embeddings, axis=0))
+        except Exception as e:
+            log_callback(f"❌ Error processing {img_path}: {e}")
+
+    if vecs:
+        ref_embeddings[label] = np.mean(vecs, axis=0)
+        log_callback(f"✅ Rebuilt embeddings for '{label}' using {len(vecs)} reference image(s).")
+    else:
+        ref_embeddings.pop(label, None)
+        log_callback(f"⚠️ No valid embeddings for '{label}'. Cache cleared.")
+
 
 def get_buffalo_model(model_dir, providers=None, log_callback=print):
     """
@@ -523,4 +583,5 @@ def distribute_to_labels(img_path, filename, labels_set, best_label, output_dir,
         _move_one(img_path, dest_folder, filename, keep_original_filenames, log_callback)
     except Exception as e:
         log_callback(f"❌ Move failed for {filename} → {best_label}: {e}")
+
 
