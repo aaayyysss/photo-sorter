@@ -83,6 +83,11 @@ except Exception:  # pragma: no cover
     def purge_missing_references() -> int:
         return 0
 
+try:
+    from photo_sorter import build_reference_embeddings_for_label as _build_label_embeddings
+except Exception:
+    _build_label_embeddings = None  # fallback to full rebuild if not available
+
 from photo_sorter import (
     build_reference_embeddings_from_db,
     sort_photos_with_embeddings_from_folder_using_db
@@ -489,7 +494,7 @@ class ReferenceBrowser(ttk.Frame):
         if not label:
             messagebox.showwarning("No Label", "Select a label to delete.")
             return
-    
+            
         if not messagebox.askyesno("Delete Label", f"Delete ALL references for label '{label}'?"):
             return
     
@@ -1119,48 +1124,46 @@ class ImageRangerGUI:
         self.root.bind_all("<Control-z>", lambda e: self.undo_last())  # optional hotkey
 
 
-
     def rebuild_embeddings_async(self, only_label: str | None = None):
-        if self._rebuild_pending:
+        """Debounce and rebuild embeddings (optionally only for one label)."""
+        # cancel any pending call
+        if getattr(self, "_rebuild_pending", None):
             try:
                 self.root.after_cancel(self._rebuild_pending)
             except Exception:
                 pass
             self._rebuild_pending = None
-        self._rebuild_pending = self.root.after(200, lambda ol=only_label: self._rebuild_do(ol))
     
-    def _build_menu(self):
-        menubar = tk.Menu(self.root)
-        settings_menu = tk.Menu(menubar, tearoff=0)
-        settings_menu.add_command(label="Preferences…", command=self.open_settings_dialog)
-        menubar.add_cascade(label="Settings", menu=settings_menu)
-        tools = tk.Menu(menubar, tearoff=0)
-        tools.add_command(label="Rebuild Embeddings", command=self.rebuild_embeddings_async)
-        tools.add_command(label="Open Reference Root", command=self.open_reference_root)
-        tools.add_separator()
-        tools.add_command(label="Export Match Audit (CSV)…", command=self.export_match_audit_csv)
-        menubar.add_cascade(label="Tools", menu=tools)
-        
-        self.root.config(menu=menubar)
-
-    def apply_styles(self):
-        if not hasattr(self, "style"):
-            self.style = ttk.Style()
-
-        # main-grid style
-        self.style.configure(
-            "Selected.TFrame",
-            background=SETTINGS["main_grid_sel_color"],
-            borderwidth=int(SETTINGS["main_grid_sel_border"]),
-            relief="solid",
+        # slight debounce to coalesce multiple rapid calls
+        self._rebuild_pending = self.root.after(
+            200, lambda ol=only_label: self._rebuild_do(ol)
         )
-        # ref-grid style
-        self.style.configure(
-            "RefSelected.TFrame",
-            background=SETTINGS["ref_grid_sel_color"],
-            borderwidth=int(SETTINGS["ref_grid_sel_border"]),
-            relief="solid",
-        )
+    
+    def _rebuild_do(self, only_label: str | None):
+        """Worker launcher for (partial) rebuild."""
+        self._rebuild_pending = None  # clear pending flag now
+    
+        def _work():
+            model_dir = os.path.join(os.path.dirname(__file__), "buffalo_l")
+            try:
+                if only_label and _build_label_embeddings:
+                    self.gui_log(f"⚙️ Rebuilding embeddings for '{only_label}'…")
+                    _build_label_embeddings(
+                        db_path=DB_PATH,
+                        model_dir=model_dir,
+                        label=only_label,
+                        log_callback=self.gui_log
+                    )
+                else:
+                    self.gui_log("⚙️ Rebuilding reference embeddings…")
+                    build_reference_embeddings_from_db(
+                        DB_PATH, model_dir, self.gui_log
+                    )
+                self.gui_log("✅ Embeddings rebuilt.")
+            except Exception as e:
+                self.gui_log(f"❌ Embedding rebuild failed: {e}")
+    
+        threading.Thread(target=_work, daemon=True).start()
         
 # ---------------background thumbnail loader-------------------
     def _cancel_thumb_job(self):
