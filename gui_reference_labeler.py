@@ -322,10 +322,10 @@ class ReferenceBrowser(ttk.Frame):
     - Delete Selected removes only selected reference entries.
     - Delete Label removes all entries for the chosen label.
     """
-    #def __init__(self, master, gui_log, rebuild_embeddings_async, *args, **kwargs):
-    def __init__(self, master, app, gui_log, rebuild_embeddings_async, *args, **kwargs):
+    def __init__(self, master, gui_log, rebuild_embeddings_async, *args, **kwargs):
+    #def __init__(self, master, app, gui_log, rebuild_embeddings_async, *args, **kwargs):
         super().__init__(master, *args, **kwargs)
-        self.app = app                       # <-- keep reference to ImageRangerGUI
+        #self.app = app                       # <-- keep reference to ImageRangerGUI
         self.gui_log = gui_log
         self.rebuild_embeddings_async = rebuild_embeddings_async
         super().__init__(master, *args, **kwargs)
@@ -470,14 +470,10 @@ class ReferenceBrowser(ttk.Frame):
             messagebox.showwarning("No Label", "Select a label to delete.")
             return
     
-        confirm = messagebox.askyesno(
-            "Delete Label",
-            f"Delete ALL references for label '{label}'?"
-        )
-        if not confirm:
+        if not messagebox.askyesno("Delete Label", f"Delete ALL references for label '{label}'?"):
             return
     
-        # Collect all paths for this label first (for Undo + logging)
+        # Gather everything BEFORE we delete (for Undo)
         try:
             entries = get_all_references()
         except Exception as e:
@@ -486,7 +482,19 @@ class ReferenceBrowser(ttk.Frame):
     
         paths_for_label = [path for (_id, lbl, path) in entries if lbl == label]
     
-        # Delete references from DB
+        # capture metadata for Undo
+        try:
+            threshold = get_threshold_for_label(label)
+        except Exception:
+            threshold = None
+    
+        try:
+            # we want the intended folder path (even if missing)
+            folder = get_label_folder_path(label)
+        except Exception:
+            folder = None
+    
+        # Delete references
         deleted = 0
         for (_id, lbl, path) in entries:
             if lbl == label:
@@ -494,27 +502,30 @@ class ReferenceBrowser(ttk.Frame):
                     delete_reference(path)
                     deleted += 1
                 except Exception as e:
-                    # Continue deleting the rest, but log the issue
                     self.gui_log(f"⚠️ Could not delete reference '{path}': {e}")
     
-        # Remove the on-disk folder entirely (if using reference root folders)
+        # Remove on-disk folder
         try:
-            folder = get_label_folder_path(label)  # ensures path under reference root
-            if os.path.isdir(folder):
+            if folder and os.path.isdir(folder):
                 shutil.rmtree(folder)
         except Exception as e:
             self.gui_log(f"⚠️ Could not remove folder for '{label}': {e}")
     
-        # Remove label metadata row so it disappears from lists
+        # Remove label metadata
         try:
             delete_label(label)
         except Exception:
             pass
     
-        # Push a single UNDO action with all paths
+        # Push a single UNDO action for the whole label
         try:
-            # self.master is the ImageRangerGUI
-            self.master.undo.push({"type": "delete_label", "label": label, "paths": paths_for_label})
+            self.push_undo({
+                "type": "delete_label",
+                "label": label,
+                "paths": paths_for_label,
+                "threshold": threshold,
+                "folder": folder
+            })
         except Exception:
             pass
     
@@ -523,19 +534,16 @@ class ReferenceBrowser(ttk.Frame):
         try:
             self.label_menu.configure(values=get_all_labels())
         except Exception:
-            # Fallback: rebuild from entries table if get_all_labels() is unavailable
             self.label_menu.configure(values=_labels_from_entries())
     
-        # Clear current selection and thumbnails
         self.label_filter.set("")
         self.load_images()
     
-        # Rebuild embeddings ONLY for this (now-removed) label to flush caches
+        # PARTIAL rebuild for just this label (flush it from memory)
         try:
-            self.master.rebuild_embeddings_async(only_label=label)
+            self.rebuild_embeddings_async(only_label=label)
         except Exception:
-            # Older code paths: if master doesn't expose partial rebuild, fall back (not recommended)
-            self.master.rebuild_embeddings_async()
+            self.rebuild_embeddings_async()
 
     def rename_label(self):
         current = self.label_filter.get()
@@ -1302,7 +1310,14 @@ class ImageRangerGUI:
         tk.Label(mode_frame, text=rules, justify="left", anchor="w", fg="#444", wraplength=320).pack(anchor=tk.W, pady=(6, 2))
 
         #self.reference_browser = ReferenceBrowser(self.root, self.gui_log, self.rebuild_embeddings_async)
-        self.reference_browser = ReferenceBrowser(self.root, self, self.gui_log, self.rebuild_embeddings_async)
+        #self.reference_browser = ReferenceBrowser(self.root, self, self.gui_log, self.rebuild_embeddings_async)
+        self.reference_browser = ReferenceBrowser(
+        self.root,
+        self.gui_log,
+        self.rebuild_embeddings_async,  # pass method
+        self.undo.push,                 # pass Undo push function
+        )
+
         self.reference_browser.pack(fill=tk.X, padx=10, pady=5)
 
         self.main_frame = ttk.Frame(self.root)
@@ -1350,17 +1365,47 @@ class ImageRangerGUI:
                 self.gui_log(f"Undo failed: {e}")
     
         elif t == "delete_label":
-            # restore all paths under the label
+            lbl = act.get("label")
+            paths = act.get("paths", [])
+            threshold = act.get("threshold", 0.3)
+            folder = act.get("folder")
+        
             try:
-                for p in act["paths"]:
-                    insert_reference(p, act["label"])
-                self.gui_log(f"↩ Restored label '{act['label']}' with {len(act['paths'])} references")
+                # Restore label metadata first (so it appears in dropdowns)
+                if folder is None or not isinstance(folder, str) or not folder.strip():
+                    # fallback to current reference root
+                    folder = os.path.join(get_reference_root(), lbl)
+                try:
+                    os.makedirs(folder, exist_ok=True)
+                except Exception:
+                    pass
+        
+                # ensure label row exists with threshold/folder
+                try:
+                    insert_or_update_label(lbl, folder, threshold)
+                except Exception:
+                    pass
+        
+                # Restore each reference path
+                for p in paths:
+                    try:
+                        insert_reference(p, lbl)
+                    except Exception:
+                        # ignore single failures; continue others
+                        pass
+        
+                # UI refresh
                 self.reference_browser.refresh_label_list(auto_select=False)
-                self.reference_browser.label_filter.set(act["label"])
+                self.reference_browser.label_filter.set(lbl)
                 self.reference_browser.load_images()
-                self.rebuild_embeddings_async(only_label=act["label"])
+        
+                # Rebuild only this label
+                self.rebuild_embeddings_async(only_label=lbl)
+        
+                self.gui_log(f"↩ Restored label '{lbl}' with {len(paths)} reference(s).")
             except Exception as e:
                 self.gui_log(f"Undo failed: {e}")
+
         else:
             self.gui_log("Undo: unknown action type.")
 # ---------------------------------------------------    
