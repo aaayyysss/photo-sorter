@@ -322,7 +322,12 @@ class ReferenceBrowser(ttk.Frame):
     - Delete Selected removes only selected reference entries.
     - Delete Label removes all entries for the chosen label.
     """
-    def __init__(self, master, gui_log, rebuild_embeddings_async, *args, **kwargs):
+    #def __init__(self, master, gui_log, rebuild_embeddings_async, *args, **kwargs):
+    def __init__(self, master, app, gui_log, rebuild_embeddings_async, *args, **kwargs):
+        super().__init__(master, *args, **kwargs)
+        self.app = app                       # <-- keep reference to ImageRangerGUI
+        self.gui_log = gui_log
+        self.rebuild_embeddings_async = rebuild_embeddings_async
         super().__init__(master, *args, **kwargs)
         self.gui_log = gui_log
         self.rebuild_embeddings_async = rebuild_embeddings_async
@@ -447,29 +452,17 @@ class ReferenceBrowser(ttk.Frame):
             if lbl == label and path in targets:
                 # Remove file if it exists (we now copy into ReferenceRoot/<label>)
                 try:
-                    if os.path.isfile(path):
-                        os.remove(path)
-                except Exception:
-                    pass
-                # Remove DB entry
-                delete_reference(path)
-                delete_reference(path)
-                master = self.master  # ImageRangerGUI root if needed
-                try:
-                    # push one per path so each can be undone individually
-                    self.master.undo.push({"type":"delete_ref","label": label,"path": path})
-                except Exception:
-                    pass
-
-                deleted += 1
-
-        # Refresh metadata.json
-        _write_or_refresh_metadata(label)
-
+                    delete_reference(path)
+                    deleted += 1
+                    # push to Undo (now using self.app)
+                    self.app.undo.push({"type": "delete_ref", "label": label, "path": path})
+                except Exception as e:
+                    self.gui_log(f"⚠️ Could not delete '{path}': {e}")
+                    
         self.gui_log(f"🗑️ Deleted {deleted} reference(s) from '{label}'. Rebuilding embeddings…")
         self.load_images()
+        # use the injected callback, not self.master
         self.rebuild_embeddings_async(only_label=label)
-
 
     def delete_label_all(self):
         label = self.label_filter.get()
@@ -1265,7 +1258,6 @@ class ImageRangerGUI:
 
         threading.Thread(target=_runner, daemon=True).start()
 
-
     def build_layout(self):
         top_frame = ttk.Frame(self.root)
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
@@ -1309,7 +1301,8 @@ class ImageRangerGUI:
         )
         tk.Label(mode_frame, text=rules, justify="left", anchor="w", fg="#444", wraplength=320).pack(anchor=tk.W, pady=(6, 2))
 
-        self.reference_browser = ReferenceBrowser(self.root, self.gui_log, self.rebuild_embeddings_async)
+        #self.reference_browser = ReferenceBrowser(self.root, self.gui_log, self.rebuild_embeddings_async)
+        self.reference_browser = ReferenceBrowser(self.root, self, self.gui_log, self.rebuild_embeddings_async)
         self.reference_browser.pack(fill=tk.X, padx=10, pady=5)
 
         self.main_frame = ttk.Frame(self.root)
