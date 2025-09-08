@@ -124,7 +124,6 @@ def _thumbcache_put(key, value):
             pass
 
 #-----------------------------
-
 def unique_copy_or_move(src: str, dst_folder: str, keep_original=False) -> str:
     """Copy (or move) file to dst_folder with a short unique prefix; returns destination path."""
     ensure_dir(dst_folder)
@@ -175,7 +174,6 @@ def get_reference_root() -> str:
             root = os.getcwd()
 
     return root
-
 
 def get_label_folder_path(label: str) -> str:
     folder = os.path.join(get_reference_root(), label)
@@ -233,6 +231,20 @@ def _write_or_refresh_metadata(label: str, threshold: float | None = None):
     except Exception:
         pass  # non-fatal
 
+# ---- Simple Undo Stack ------------------------------------------------------
+class UndoStack:
+    def __init__(self):
+        self.stack = []
+
+    def push(self, action: dict):
+        # action example:
+        # {"type":"delete_ref","label": str,"path": str}
+        # {"type":"add_ref","label": str,"path": str}
+        # {"type":"delete_label","label": str,"paths": [str, ...]}
+        self.stack.append(action)
+
+    def pop(self):
+        return self.stack.pop() if self.stack else None
 
 # ---- Visual Logger --------------------------------------------
 
@@ -441,6 +453,14 @@ class ReferenceBrowser(ttk.Frame):
                     pass
                 # Remove DB entry
                 delete_reference(path)
+                delete_reference(path)
+                master = self.master  # ImageRangerGUI root if needed
+                try:
+                    # push one per path so each can be undone individually
+                    self.master.undo.push({"type":"delete_ref","label": label,"path": path})
+                except Exception:
+                    pass
+
                 deleted += 1
 
         # Refresh metadata.json
@@ -456,46 +476,73 @@ class ReferenceBrowser(ttk.Frame):
         if not label:
             messagebox.showwarning("No Label", "Select a label to delete.")
             return
-
+    
         confirm = messagebox.askyesno(
             "Delete Label",
             f"Delete ALL references for label '{label}'?"
         )
         if not confirm:
             return
-
-        entries = get_all_references()
+    
+        # Collect all paths for this label first (for Undo + logging)
+        try:
+            entries = get_all_references()
+        except Exception as e:
+            messagebox.showerror("Delete Label", f"Failed to read DB: {e}")
+            return
+    
+        paths_for_label = [path for (_id, lbl, path) in entries if lbl == label]
+    
+        # Delete references from DB
         deleted = 0
         for (_id, lbl, path) in entries:
             if lbl == label:
-                delete_reference(path)
-                deleted += 1
-
-        # Optional: also remove label metadata so it disappears from the list
-        # Remove the on-disk folder entirely
+                try:
+                    delete_reference(path)
+                    deleted += 1
+                except Exception as e:
+                    # Continue deleting the rest, but log the issue
+                    self.gui_log(f"⚠️ Could not delete reference '{path}': {e}")
+    
+        # Remove the on-disk folder entirely (if using reference root folders)
         try:
             folder = get_label_folder_path(label)  # ensures path under reference root
             if os.path.isdir(folder):
                 shutil.rmtree(folder)
-        except Exception:
-            pass
-        
+        except Exception as e:
+            self.gui_log(f"⚠️ Could not remove folder for '{label}': {e}")
+    
+        # Remove label metadata row so it disappears from lists
         try:
             delete_label(label)
         except Exception:
             pass
-
-       
-        # AFTER deletes + UI refresh
+    
+        # Push a single UNDO action with all paths
+        try:
+            # self.master is the ImageRangerGUI
+            self.master.undo.push({"type": "delete_label", "label": label, "paths": paths_for_label})
+        except Exception:
+            pass
+    
+        # UI refresh
         self.gui_log(f"🗑️ Deleted label '{label}' ({deleted} item(s)). Rebuilding embeddings…")
-        
-        self.label_menu.configure(values=get_all_labels())
-        self.refresh_label_list(auto_select=False)
+        try:
+            self.label_menu.configure(values=get_all_labels())
+        except Exception:
+            # Fallback: rebuild from entries table if get_all_labels() is unavailable
+            self.label_menu.configure(values=_labels_from_entries())
+    
+        # Clear current selection and thumbnails
         self.label_filter.set("")
         self.load_images()
-        
-        self.rebuild_embeddings_async(only_label=label)  # will remove it from in-memory map
-#        self.rebuild_embeddings_async()
+    
+        # Rebuild embeddings ONLY for this (now-removed) label to flush caches
+        try:
+            self.master.rebuild_embeddings_async(only_label=label)
+        except Exception:
+            # Older code paths: if master doesn't expose partial rebuild, fall back (not recommended)
+            self.master.rebuild_embeddings_async()
 
     def rename_label(self):
         current = self.label_filter.get()
@@ -612,7 +659,6 @@ class ReferenceBrowser(ttk.Frame):
             self.rebuild_embeddings_async()
         except Exception:
             messagebox.showerror("Invalid", "Threshold must be a number between 0.0 and 1.0.")
-
 
 # ---- Match Review Panel (post-sorting) ----------------------------
 
@@ -1039,6 +1085,8 @@ class ImageRangerGUI:
 
         self.gui_log("✅ GUI initialized.")
         self._rebuild_pending = None
+        
+        self.undo = UndoStack()
 
     def rebuild_embeddings_async(self, only_label: str | None = None):
                    if self._rebuild_pending:
@@ -1230,6 +1278,8 @@ class ImageRangerGUI:
         ttk.Button(top_frame, text="➕ Add to Reference", command=self.add_selected_to_reference).pack(side=tk.LEFT, padx=6)
 
         ttk.Button(top_frame, text="🧹 DB Health Check", command=self.db_health_check).pack(side=tk.LEFT, padx=10)
+        ttk.Button(top_frame, text="↩ Undo", command=self.undo_last).pack(side=tk.LEFT, padx=6)
+
         self.btn_review = ttk.Button(top_frame, text="🧭 Review Unmatched", command=self.open_review, state="disabled")
         self.btn_review.pack(side=tk.LEFT, padx=10)
         
@@ -1273,7 +1323,54 @@ class ImageRangerGUI:
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         _bind_vertical_mousewheel(self.canvas)
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
+        
+# ---------------- Implement undo_last ---------------------
+    def undo_last(self):
+        act = self.undo.pop()
+        if not act:
+            messagebox.showinfo("Undo", "Nothing to undo.")
+            return
+    
+        t = act.get("type")
+        if t == "delete_ref":
+            # restore a deleted reference record
+            try:
+                insert_reference(act["path"], act["label"])
+                self.gui_log(f"↩ Restored reference to '{act['label']}': {act['path']}")
+                self.reference_browser.refresh_label_list(auto_select=False)
+                if self.reference_browser.label_filter.get() == act["label"]:
+                    self.reference_browser.load_images()
+                self.rebuild_embeddings_async(only_label=act["label"])
+            except Exception as e:
+                self.gui_log(f"Undo failed: {e}")
+    
+        elif t == "add_ref":
+            # remove a previously added reference
+            try:
+                delete_reference(act["path"])
+                self.gui_log(f"↩ Removed previously-added reference: {act['path']}")
+                self.reference_browser.refresh_label_list(auto_select=False)
+                if self.reference_browser.label_filter.get() == act["label"]:
+                    self.reference_browser.load_images()
+                self.rebuild_embeddings_async(only_label=act["label"])
+            except Exception as e:
+                self.gui_log(f"Undo failed: {e}")
+    
+        elif t == "delete_label":
+            # restore all paths under the label
+            try:
+                for p in act["paths"]:
+                    insert_reference(p, act["label"])
+                self.gui_log(f"↩ Restored label '{act['label']}' with {len(act['paths'])} references")
+                self.reference_browser.refresh_label_list(auto_select=False)
+                self.reference_browser.label_filter.set(act["label"])
+                self.reference_browser.load_images()
+                self.rebuild_embeddings_async(only_label=act["label"])
+            except Exception as e:
+                self.gui_log(f"Undo failed: {e}")
+        else:
+            self.gui_log("Undo: unknown action type.")
+# ---------------------------------------------------    
     def _confirm_modal(self, title: str, message: str) -> bool:
         """Blocking, truly modal Yes/No dialog centered over the main window."""
         dlg = tk.Toplevel(self.root)
@@ -1323,8 +1420,6 @@ class ImageRangerGUI:
             removed = purge_missing_references()
             self.gui_log(f"🧹 DB Health Check: removed {removed} dead reference entries.")
             messagebox.showinfo("DB Health Check", f"Removed {removed} dead reference entries.")
- #   self.reference_browser.label_menu.configure(values=get_all_labels())
- #self.reference_browser.load_images()
             self.reference_browser.refresh_label_list(auto_select=False)
             if removed:
                 self.rebuild_embeddings_async()
@@ -1411,7 +1506,6 @@ class ImageRangerGUI:
         if not dlg.result:
             return
         label, threshold = dlg.result
-        
 # --------------------------------
         for path in self.selected_images:
             # Copy to ReferenceRoot/<label>/…
@@ -1467,6 +1561,7 @@ class ImageRangerGUI:
         for p in self.selected_images:
             dst = _safe_copy_to_label_folder(p, current_label, keep_original_name=True)
             insert_reference(dst, current_label)
+            self.undo.push({"type":"add_ref","label": current_label,"path": p})
 
         # Optional: update metadata based on existing threshold
         _write_or_refresh_metadata(current_label)
@@ -1623,7 +1718,6 @@ class ImageRangerGUI:
 
         self.sort_thread = threading.Thread(target=worker, daemon=True)
         self.sort_thread.start()
-
  
 # -------------------------------------------
     def open_reference_root(self):
@@ -1700,7 +1794,6 @@ class ImageRangerGUI:
                 if self.sort_stop_event:
                     self.sort_stop_event.set()
                 self._set_sort_stopping()
-
 
 # -----------------------------------------------------------
 
