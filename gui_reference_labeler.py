@@ -1652,15 +1652,23 @@ class ImageRangerGUI:
                   command=lambda v: self.on_change_threshold(float(v)), length=160).pack(side=tk.LEFT, padx=(0,10))
         self.lbl_thr_val = tk.Label(bar, text="0.30", bg="#141414", fg="#aaa"); self.lbl_thr_val.pack(side=tk.LEFT)
     
+        # ---- Buttons (assign to variables!) ----
         btns = tk.Frame(bar, bg="#141414"); btns.pack(side=tk.RIGHT, padx=8)
-        ttk.Button(btns, text="Add from Selection", command=self.add_selected_to_label).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Remove Selected",    command=self.remove_selected_refs).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Rebuild",            command=lambda: self.rebuild_embeddings_async(only_label=self.active_label.get())).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Delete Label",       command=self.delete_active_label).pack(side=tk.LEFT, padx=4)
-
-        # after you create these in build_reference_strip():
+        btn_add     = ttk.Button(btns, text="Add from Selection", command=self.add_selected_to_label)
+        btn_remove  = ttk.Button(btns, text="Remove Selected",    command=self.remove_selected_refs)
+        btn_rebuild = ttk.Button(btns, text="Rebuild",            command=lambda: self.schedule_rebuild_embeddings(only_label=self.active_label.get()))
+        btn_delete  = ttk.Button(btns, text="Delete Label",       command=self.delete_active_label)
+    
+        btn_add.pack(side=tk.LEFT, padx=4)
+        btn_remove.pack(side=tk.LEFT, padx=4)
+        btn_rebuild.pack(side=tk.LEFT, padx=4)
+        btn_delete.pack(side=tk.LEFT, padx=4)
+    
+        # make sure the disable-list exists, then register buttons for busy-mode
+        if not hasattr(self, "_buttons_to_disable"):
+            self._buttons_to_disable = []
         self._buttons_to_disable.extend([btn_add, btn_remove, btn_rebuild, btn_delete])
-
+    
         # filmstrip (horizontal scroll)
         strip = tk.Frame(self.ref_frame, bg="#141414"); strip.pack(fill=tk.BOTH, expand=True)
         self.ref_canvas = tk.Canvas(strip, bg="#141414", height=110, highlightthickness=0)
