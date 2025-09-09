@@ -584,7 +584,7 @@ class ReferenceBrowser(ttk.Frame):
 
         self.gui_log(f"🗑️ Deleted {deleted} reference(s) from '{label}'. Rebuilding embeddings…")
         self.load_images()
-        self.rebuild_embeddings_async(only_label=label)
+        self.schedule_rebuild_embeddings(only_label=label)
 
     def delete_label_all(self):
         label = self.label_filter.get()
@@ -647,7 +647,7 @@ class ReferenceBrowser(ttk.Frame):
         self.refresh_label_list(auto_select=False)
         self.label_filter.set("")
         self.load_images()
-        self.rebuild_embeddings_async(only_label=label)
+        self.schedule_rebuild_embeddings(only_label=label)
 
     # ---------------- rename ----------------
     def rename_label(self):
@@ -741,7 +741,7 @@ class ReferenceBrowser(ttk.Frame):
             set_threshold_for_label(label, thr)
             _write_or_refresh_metadata(label, thr)
             self.gui_log(f"🎚️ Threshold for '{label}' set to {thr:.3f}.")
-            self.rebuild_embeddings_async(only_label=label)
+            self.schedule_rebuild_embeddings(only_label=label)
         except Exception:
             messagebox.showerror("Invalid", "Threshold must be a number between 0.0 and 1.0.")
 
@@ -1181,6 +1181,9 @@ class ImageRangerGUI:
         self.last_unmatched_dir = None
         self.last_output_dir = None
 
+        self._rebuild_after_id = None   # Tk 'after' handle for debounce
+        self._rebuild_last_label = None
+
         # async/undo helpers
         self._rebuild_pending = None
         self.undo = UndoStack()
@@ -1439,8 +1442,28 @@ class ImageRangerGUI:
             self._workers.append(t)
         except Exception:
             pass
+# ------------------------Debounce multiple rebuild requests into one."--------------------------
+    def schedule_rebuild_embeddings(self, only_label=None, delay_ms=400):
+        """Debounce multiple rebuild requests into one."""
+        self._rebuild_last_label = only_label
+        # cancel previous scheduled call
+        if self._rebuild_after_id is not None:
+            try:
+                self.root.after_cancel(self._rebuild_after_id)
+            except Exception:
+                pass
+        # schedule a new one
+        self._rebuild_after_id = self.root.after(
+            delay_ms, lambda: self._run_rebuild_coalesced()
+        )
+    
+    def _run_rebuild_coalesced(self):
+        self._rebuild_after_id = None
+        label = self._rebuild_last_label
+        self._rebuild_last_label = None
+        self.rebuild_embeddings_async(only_label=label)
 
-
+# --------------------------------------------------------------------
     def _rebuild_do(self, only_label: str | None):
         self._rebuild_pending = None
         def _runner(label=only_label):
@@ -1717,9 +1740,13 @@ class ImageRangerGUI:
     
             ph = self.load_thumb(path, size)
             if ph:
-                lbl = tk.Label(frame, image=ph, bg="#202020"); lbl.image = ph
+                lbl = tk.Label(frame, image=ph, bg="#202020"); 
+                lbl.image = ph
                 lbl.pack(fill=tk.BOTH, expand=True)
-    
+            else:
+                # fallback visual for unreadable images
+                tk.Label(frame, text="(no preview)", fg="#aaa", bg="#202020").pack(expand=True, fill=tk.BOTH)
+                
             frame.config(highlightbackground="#69a7ff" if idx in self.selected_indices else "#2a2a2a")
     
             def on_click(e, i=idx): self.toggle_select(i)
@@ -1735,6 +1762,24 @@ class ImageRangerGUI:
         self.set_status_right(len(self.current_images), len(self.selected_indices))
         self.inner.update_idletasks()
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+    # ------------------------------------------------
+    def load_thumb(self, path: str, size: int):
+        """Loads and caches a thumbnail for the given path at the given size."""
+        key = (path, int(size))
+        if key in self._thumb_cache:
+            return self._thumb_cache[key]
+        try:
+            im = Image.open(path)
+            # ensure we can place on Tk canvas
+            if im.mode not in ("RGB", "RGBA"):
+                im = im.convert("RGB")
+            im.thumbnail((int(size), int(size)))
+            ph = ImageTk.PhotoImage(im)
+            self._thumb_cache[key] = ph
+            return ph
+        except Exception:
+            # corrupted/unreadable image -> no thumb
+            return None
 
     # ------------------------------------------------
     def toggle_select(self, idx: int):
@@ -1797,7 +1842,7 @@ class ImageRangerGUI:
                     pass
     
             self.set_status_left(f"Added {added} reference(s) to '{label}'. Rebuilding embeddings…")
-            self.rebuild_embeddings_async(only_label=label)
+            self.schedule_rebuild_embeddings(only_label=label)
             self.render_reference_strip(label)
         except Exception as e:
             self.set_status_left(f"Add failed: {e}")
@@ -1826,7 +1871,7 @@ class ImageRangerGUI:
                     pass
     
             self.set_status_left(f"Removed {rem} from '{label}'. Rebuilding embeddings…")
-            self.rebuild_embeddings_async(only_label=label)
+            self.schedule_rebuild_embeddings(only_label=label)
             self.render_reference_strip(label)
         except Exception as e:
             self.set_status_left(f"Remove failed: {e}")
@@ -1976,7 +2021,7 @@ class ImageRangerGUI:
                         self.reference_browser.refresh_label_list(auto_select=False)
                         if self.reference_browser.label_filter.get() == label:
                             self.reference_browser.load_images()
-                        self.rebuild_embeddings_async(only_label=label)
+                        self.schedule_rebuild_embeddings(only_label=label)
 
                     self.gui_log(f"↩ Restored {restored} reference(s) to '{label}'.")
                     return
@@ -2032,7 +2077,7 @@ class ImageRangerGUI:
                         self.reference_browser.refresh_label_list(auto_select=False)
                         self.reference_browser.label_filter.set(label)
                         self.reference_browser.load_images()
-                        self.rebuild_embeddings_async(only_label=label)
+                        self.schedule_rebuild_embeddings(only_label=label)
                         self.gui_log(f"↩ Restored label '{label}' ({restored} items).")
                     except Exception as ex:
                         self.gui_log(f"Undo restore of label failed: {ex}")
@@ -2124,7 +2169,7 @@ class ImageRangerGUI:
         self.reference_browser.label_filter.set(label)
         self.reference_browser.load_images()
         self.gui_log(f"🏷️ Labeled images as '{label}' (threshold {threshold}). Rebuilding embeddings…")
-        self.rebuild_embeddings_async(only_label=label)
+        self.schedule_rebuild_embeddings(only_label=label)
 
     def add_selected_to_reference(self):
         if not self.selected_images:
