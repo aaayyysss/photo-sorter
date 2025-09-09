@@ -1547,8 +1547,6 @@ class ImageRangerGUI:
                         ("⭐", self.action_flag_selected), ("⚙", self.action_settings)]:
             ttk.Button(btnbar, text=txt, width=2, command=cb).pack(side=tk.LEFT, padx=2)
         
-        ttk.Button(btnbar, text="📂 Open", command=self.choose_folder).pack(side=tk.LEFT, padx=2)
-        
         # ---------------------------------------------------------
         # spinner (hidden by default)
         self.busy = ttk.Progressbar(topbar, mode="indeterminate", length=90)
