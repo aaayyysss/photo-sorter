@@ -1151,7 +1151,9 @@ class ImageRangerGUI:
         self._thumb_cache_est_bytes = 0
         self._thumb_cache_items_limit = 2000            # ~ how many thumbs to keep
         self._thumb_cache_bytes_limit = 256 * 1024 * 1024  # ~256 MB cap
-        
+
+        self.root.bind("<Control-n>", lambda e: self.create_label_from_selection())
+
         # remember last zooms to decide when to purge a lot
         self._last_main_zoom = int(self.main_thumb_size.get())
         self._last_ref_zoom  = int(self.ref_thumb_size.get())
@@ -1687,6 +1689,8 @@ class ImageRangerGUI:
             width=18,
             state="normal"   # ← allow typing a new label name
         )
+        self.ref_label_menu.bind("<Return>", lambda e: self.create_label_from_text())
+
         self.ref_label_menu.pack(side=tk.LEFT, padx=(0,6))
         self.ref_label_menu.bind("<<ComboboxSelected>>", lambda e: self.on_change_active_label())
         
@@ -1744,6 +1748,16 @@ class ImageRangerGUI:
             pass
 
     # -----------------------------------------------
+    def create_label_from_text(self):
+        label = self._sanitize_label(self.active_label.get())
+        if not label:
+            return
+        self._ensure_label_registered(label)
+        self._refresh_label_list_and_select(label)
+        self.render_reference_strip(label)
+        self.set_status_left(f"Label '{label}' ready. Select photos and click 'Add from Selection'.")
+
+    #------------------------------------------------
     def render_reference_strip(self, label=None):
         for w in self.ref_inner.winfo_children(): w.destroy()
         label = label or self.active_label.get()
