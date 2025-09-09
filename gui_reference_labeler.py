@@ -1418,17 +1418,28 @@ class ImageRangerGUI:
         SettingsDialog(self.root, SETTINGS, self._on_settings_saved)
 
     # ---------------- embeddings rebuild (debounced + threaded) ----------------
-    def rebuild_embeddings_async(self, only_label: str | None = None):
+    def rebuild_embeddings_async(self, only_label=None):
+        """Run your existing embedding rebuild in a worker to keep GUI responsive."""
+        import threading
         if getattr(self, "_cancel_event", None) and self._cancel_event.is_set():
-            return  # or break cleanly
-
-        if getattr(self, "_rebuild_pending", None):
+            return
+    
+        def _job():
             try:
-                self.root.after_cancel(self._rebuild_pending)
-            except Exception:
-                pass
-            self._rebuild_pending = None
-        self._rebuild_pending = self.root.after(200, lambda ol=only_label: self._rebuild_do(ol))
+                from photo_sorter import build_reference_embeddings_from_db
+                build_reference_embeddings_from_db(only_label=only_label)
+                self.set_status_left("✅ Embeddings rebuilt.")
+            except Exception as e:
+                self.set_status_left(f"Rebuild failed: {e}")
+    
+        t = threading.Thread(target=_job, daemon=True)
+        t.start()
+        # track workers so we can join on close
+        try:
+            self._workers.append(t)
+        except Exception:
+            pass
+
 
     def _rebuild_do(self, only_label: str | None):
         self._rebuild_pending = None
@@ -1485,7 +1496,9 @@ class ImageRangerGUI:
         for txt, cb in [("🗂", self.action_toggle_view), ("↕", self.action_sort_menu),
                         ("⭐", self.action_flag_selected), ("⚙", self.action_settings)]:
             ttk.Button(btnbar, text=txt, width=2, command=cb).pack(side=tk.LEFT, padx=2)
-    
+        
+        ttk.Button(btnbar, text="📂 Open", command=self.choose_folder).pack(side=tk.LEFT, padx=2)
+
         # ====== Vertical split: reference strip | main grid ======
         self.right_split = tk.PanedWindow(self.right_panel, orient=tk.VERTICAL, sashwidth=6, bg="#111")
         self.right_split.pack(fill=tk.BOTH, expand=True)
@@ -1623,6 +1636,31 @@ class ImageRangerGUI:
         if bbox:
             width = bbox[2] - bbox[0]
             self.ref_canvas.configure(scrollregion=(0,0,width,max(110, size+14)))
+    # -----------------------------------------------
+    def choose_folder(self):
+        from tkinter import filedialog, messagebox
+        folder = filedialog.askdirectory(title="Select a folder with photos")
+        if not folder:
+            return
+        self.load_images_from_folder(folder)
+    
+    def load_images_from_folder(self, folder: str):
+        """Scan folder recursively for images and render main grid."""
+        exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+        paths = []
+        try:
+            for root, dirs, files in os.walk(folder):
+                for fn in files:
+                    if os.path.splitext(fn)[1].lower() in exts:
+                        paths.append(os.path.join(root, fn))
+        except Exception as e:
+            self.set_status_left(f"Scan failed: {e}")
+            return
+    
+        paths.sort()  # simple sort; later add sort modes
+        self.selected_indices.clear()
+        self.render_grid(paths)
+        self.set_status_left(f"Loaded {len(paths)} photos from: {folder}")
 
     # -----------------------------------------------
     def get_all_label_names(self):
@@ -1739,47 +1777,60 @@ class ImageRangerGUI:
 
     # ----------------Reference actions (hook to your DB + rebuild)---------------
     def add_selected_to_label(self):
-        label = self.active_label.get()
-        if not label or not self.selected_indices: return
+        label = self.active_label.get().strip()
+        if not label:
+            self.set_status_left("Choose a label first.")
+            return
+        if not self.selected_indices:
+            self.set_status_left("Select images in the main grid first.")
+            return
+    
         to_add = [self.current_images[i] for i in sorted(self.selected_indices) if 0 <= i < len(self.current_images)]
         try:
             from reference_db import insert_reference
-            for p in to_add: insert_reference(p, label)
+            added = 0
+            for p in to_add:
+                try:
+                    insert_reference(p, label)
+                    added += 1
+                except Exception:
+                    pass
+    
+            self.set_status_left(f"Added {added} reference(s) to '{label}'. Rebuilding embeddings…")
             self.rebuild_embeddings_async(only_label=label)
             self.render_reference_strip(label)
-            self.set_status_left(f"Added {len(to_add)} to '{label}'.")
         except Exception as e:
             self.set_status_left(f"Add failed: {e}")
+
     
     def remove_selected_refs(self):
-        label = self.active_label.get()
-        if not label: return
+        label = self.active_label.get().strip()
+        if not label:
+            self.set_status_left("Choose a label.")
+            return
+    
         to_remove = [path for frame, path in getattr(self, "_ref_thumbs", [])
                      if frame.cget("highlightbackground") == "#69a7ff"]
-        if not to_remove: return
+        if not to_remove:
+            self.set_status_left("Select references in the strip to remove.")
+            return
+    
         try:
             from reference_db import delete_reference
-            for p in to_remove: delete_reference(p)
+            rem = 0
+            for p in to_remove:
+                try:
+                    delete_reference(p)
+                    rem += 1
+                except Exception:
+                    pass
+    
+            self.set_status_left(f"Removed {rem} from '{label}'. Rebuilding embeddings…")
             self.rebuild_embeddings_async(only_label=label)
             self.render_reference_strip(label)
-            self.set_status_left(f"Removed {len(to_remove)} from '{label}'.")
         except Exception as e:
             self.set_status_left(f"Remove failed: {e}")
-    
-    def delete_active_label(self):
-        label = self.active_label.get()
-        if not label: return
-        try:
-            # use your existing label delete function
-            self.delete_label_all(label)  # new helper below
-        except Exception:
-            pass
-        self.active_label.set("")
-        try:
-            self.ref_label_menu.configure(values=self.get_all_label_names())
-        except Exception:
-            pass
-        self.render_reference_strip("")
+
 
     # -----------------------------------------------
     def set_status_left(self, msg):
@@ -1796,6 +1847,22 @@ class ImageRangerGUI:
     def action_settings(self): pass
 
     #------------------------------------------------
+
+    def delete_active_label(self):
+        label = self.active_label.get().strip()
+        if not label:
+            self.set_status_left("No active label.")
+            return
+        self.delete_label_all(label)
+        # refresh UI
+        self.active_label.set("")
+        try:
+            self.ref_label_menu.configure(values=self.get_all_label_names())
+        except Exception:
+            pass
+        self.render_reference_strip("")
+        self.set_status_left(f"Deleted label '{label}'.")
+
     def delete_label_all(self, label: str):
         if not label:
             return
@@ -1817,7 +1884,10 @@ class ImageRangerGUI:
         except Exception:
             pass
 
+    # ----------------------------------------------
 
+    
+    
     # ---------------- modal confirm ----------------
     def _confirm_modal(self, title: str, message: str) -> bool:
         dlg = tk.Toplevel(self.root)
