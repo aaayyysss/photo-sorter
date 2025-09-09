@@ -31,6 +31,7 @@ import gc
 from types import SimpleNamespace
 
 from PIL import Image, ImageTk
+from collections import OrderedDict
 
 from reference_db import (
     init_db,
@@ -1145,6 +1146,20 @@ class ImageRangerGUI:
         self.selected_indices = set()              # selection in main grid
         self.current_images = []                   # files shown in main grid
         self._thumb_cache = {}                     # ((path,size) -> PhotoImage)
+        # ---- thumbnail cache (LRU with soft limits) ----
+        self._thumb_cache = OrderedDict()   # (path, size_px) -> (PhotoImage, est_bytes)
+        self._thumb_cache_est_bytes = 0
+        self._thumb_cache_items_limit = 2000            # ~ how many thumbs to keep
+        self._thumb_cache_bytes_limit = 256 * 1024 * 1024  # ~256 MB cap
+        
+        # remember last zooms to decide when to purge a lot
+        self._last_main_zoom = int(self.main_thumb_size.get())
+        self._last_ref_zoom  = int(self.ref_thumb_size.get())
+        
+        # ---- busy/spinner state ----
+        self._is_busy = False
+        self._buttons_to_disable = []
+
 
         # workers/cancel (if you have background tasks)
         self._cancel_event = threading.Event()
@@ -1421,27 +1436,39 @@ class ImageRangerGUI:
         SettingsDialog(self.root, SETTINGS, self._on_settings_saved)
 
     # ---------------- embeddings rebuild (debounced + threaded) ----------------
+
     def rebuild_embeddings_async(self, only_label=None):
-        """Run your existing embedding rebuild in a worker to keep GUI responsive."""
-        import threading
+        """Threaded rebuild + spinner + button disable."""
         if getattr(self, "_cancel_event", None) and self._cancel_event.is_set():
             return
     
+        self.begin_busy("Rebuilding embeddings…")
+    
         def _job():
+            err = None
             try:
                 from photo_sorter import build_reference_embeddings_from_db
                 build_reference_embeddings_from_db(only_label=only_label)
-                self.set_status_left("✅ Embeddings rebuilt.")
             except Exception as e:
-                self.set_status_left(f"Rebuild failed: {e}")
+                err = e
+            # back to UI thread
+            def _done():
+                if err:
+                    self.end_busy(f"Rebuild failed: {err}")
+                else:
+                    self.end_busy("✅ Embeddings rebuilt.")
+            try:
+                self.root.after(0, _done)
+            except Exception:
+                pass
     
         t = threading.Thread(target=_job, daemon=True)
         t.start()
-        # track workers so we can join on close
         try:
             self._workers.append(t)
         except Exception:
             pass
+
 # ------------------------Debounce multiple rebuild requests into one."--------------------------
     def schedule_rebuild_embeddings(self, only_label=None, delay_ms=400):
         """Debounce multiple rebuild requests into one."""
@@ -1521,6 +1548,33 @@ class ImageRangerGUI:
             ttk.Button(btnbar, text=txt, width=2, command=cb).pack(side=tk.LEFT, padx=2)
         
         ttk.Button(btnbar, text="📂 Open", command=self.choose_folder).pack(side=tk.LEFT, padx=2)
+        
+        # ---------------------------------------------------------
+        # spinner (hidden by default)
+        self.busy = ttk.Progressbar(topbar, mode="indeterminate", length=90)
+        # pack it on demand in begin_busy()
+        
+        # ... when creating quick buttons and the "📂 Open" button:
+        # keep references so we can disable/enable while busy
+        # Example:
+        # open button
+        open_btn = ttk.Button(btnbar, text="📂 Open", command=self.choose_folder)
+        open_btn.pack(side=tk.LEFT, padx=2)
+        
+        # add your existing buttons (🗂, ↕, ⭐, ⚙) and collect them:
+        btn_toggle = ttk.Button(btnbar, text="🗂", width=2, command=self.action_toggle_view); btn_toggle.pack(side=tk.LEFT, padx=2)
+        btn_sort   = ttk.Button(btnbar, text="↕",  width=2, command=self.action_sort_menu);  btn_sort.pack(side=tk.LEFT, padx=2)
+        btn_flag   = ttk.Button(btnbar, text="⭐",  width=2, command=self.action_flag_selected); btn_flag.pack(side=tk.LEFT, padx=2)
+        btn_sett   = ttk.Button(btnbar, text="⚙",  width=2, command=self.action_settings);   btn_sett.pack(side=tk.LEFT, padx=2)
+        
+        # register all toolbar buttons we want to disable while busy
+        self._buttons_to_disable.extend([open_btn, btn_toggle, btn_sort, btn_flag, btn_sett])
+
+        # quick “free memory” button in the toolbar
+        btn_clear = ttk.Button(btnbar, text="🧹", width=2, command=self.clear_thumb_cache)
+        btn_clear.pack(side=tk.LEFT, padx=2)
+        self._buttons_to_disable.append(btn_clear)
+
 
         # ====== Vertical split: reference strip | main grid ======
         self.right_split = tk.PanedWindow(self.right_panel, orient=tk.VERTICAL, sashwidth=6, bg="#111")
@@ -1603,7 +1657,10 @@ class ImageRangerGUI:
         ttk.Button(btns, text="Remove Selected",    command=self.remove_selected_refs).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Rebuild",            command=lambda: self.rebuild_embeddings_async(only_label=self.active_label.get())).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Delete Label",       command=self.delete_active_label).pack(side=tk.LEFT, padx=4)
-    
+
+        # after you create these in build_reference_strip():
+        self._buttons_to_disable.extend([btn_add, btn_remove, btn_rebuild, btn_delete])
+
         # filmstrip (horizontal scroll)
         strip = tk.Frame(self.ref_frame, bg="#141414"); strip.pack(fill=tk.BOTH, expand=True)
         self.ref_canvas = tk.Canvas(strip, bg="#141414", height=110, highlightthickness=0)
@@ -1615,6 +1672,15 @@ class ImageRangerGUI:
         self.ref_inner = tk.Frame(self.ref_canvas, bg="#141414")
         self.ref_canvas_window = self.ref_canvas.create_window((0,0), window=self.ref_inner, anchor="nw")
         self.ref_inner.bind("<Configure>", lambda e: self.ref_canvas.configure(scrollregion=self.ref_canvas.bbox("all")))
+
+    # ---------Clear Thumb Cache------------------------
+    def clear_thumb_cache(self):
+        try:
+            self._thumb_cache.clear()
+            self._thumb_cache_est_bytes = 0
+            self.set_status_left("Thumbnail cache cleared.")
+        except Exception:
+            pass
 
     # -----------------------------------------------
     def render_reference_strip(self, label=None):
@@ -1660,6 +1726,41 @@ class ImageRangerGUI:
             width = bbox[2] - bbox[0]
             self.ref_canvas.configure(scrollregion=(0,0,width,max(110, size+14)))
     # -----------------------------------------------
+    def begin_busy(self, msg="Working…"):
+        if self._is_busy:
+            return
+        self._is_busy = True
+        self.set_status_left(msg)
+        # show spinner
+        try:
+            self.busy.pack(side=tk.LEFT, padx=8)
+            self.busy.start(10)  # ms per step
+        except Exception:
+            pass
+        # disable buttons
+        for b in self._buttons_to_disable:
+            try: b.configure(state=tk.DISABLED)
+            except Exception: pass
+    
+    def end_busy(self, msg="Done."):
+        # allow multiple end calls safely
+        if not self._is_busy:
+            return
+        self._is_busy = False
+        self.set_status_left(msg)
+        # hide spinner
+        try:
+            self.busy.stop()
+            self.busy.pack_forget()
+        except Exception:
+            pass
+        # enable buttons
+        for b in self._buttons_to_disable:
+            try: b.configure(state=tk.NORMAL)
+            except Exception: pass
+
+
+    # ----------------------------------------------
     def choose_folder(self):
         from tkinter import filedialog, messagebox
         folder = filedialog.askdirectory(title="Select a folder with photos")
@@ -1668,22 +1769,33 @@ class ImageRangerGUI:
         self.load_images_from_folder(folder)
     
     def load_images_from_folder(self, folder: str):
-        """Scan folder recursively for images and render main grid."""
-        exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
-        paths = []
-        try:
-            for root, dirs, files in os.walk(folder):
-                for fn in files:
-                    if os.path.splitext(fn)[1].lower() in exts:
-                        paths.append(os.path.join(root, fn))
-        except Exception as e:
-            self.set_status_left(f"Scan failed: {e}")
-            return
+        self.begin_busy("Scanning folder…")
+        def _scan():
+            exts = {".jpg",".jpeg",".png",".webp",".bmp",".gif",".tif",".tiff"}
+            paths = []
+            err = None
+            try:
+                for root, dirs, files in os.walk(folder):
+                    for fn in files:
+                        if os.path.splitext(fn)[1].lower() in exts:
+                            paths.append(os.path.join(root, fn))
+                paths.sort()
+            except Exception as e:
+                err = e
     
-        paths.sort()  # simple sort; later add sort modes
-        self.selected_indices.clear()
-        self.render_grid(paths)
-        self.set_status_left(f"Loaded {len(paths)} photos from: {folder}")
+            def _done():
+                if err:
+                    self.end_busy(f"Scan failed: {err}")
+                    return
+                self.selected_indices.clear()
+                self.render_grid(paths)
+                self.end_busy(f"Loaded {len(paths)} photos from: {folder}")
+            self.root.after(0, _done)
+    
+        t = threading.Thread(target=_scan, daemon=True)
+        t.start()
+        try: self._workers.append(t)
+        except Exception: pass
 
     # -----------------------------------------------
     def get_all_label_names(self):
@@ -1763,23 +1875,67 @@ class ImageRangerGUI:
         self.inner.update_idletasks()
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     # ------------------------------------------------
+    def _estimate_thumb_bytes(self, size_px: int) -> int:
+        # rough RGBA estimate; Tk PhotoImage is platform-dependent, but this is a safe upper bound
+        return int(size_px) * int(size_px) * 4
+    
+    def _evict_cache_if_needed(self):
+        # Evict by size first, then by count; pop oldest first (LRU)
+        while self._thumb_cache_est_bytes > self._thumb_cache_bytes_limit and self._thumb_cache:
+            (k_path, k_size), (img, est) = self._thumb_cache.popitem(last=False)
+            self._thumb_cache_est_bytes -= est
+        while len(self._thumb_cache) > self._thumb_cache_items_limit and self._thumb_cache:
+            (k_path, k_size), (img, est) = self._thumb_cache.popitem(last=False)
+            self._thumb_cache_est_bytes -= est
+    
     def load_thumb(self, path: str, size: int):
-        """Loads and caches a thumbnail for the given path at the given size."""
         key = (path, int(size))
         if key in self._thumb_cache:
-            return self._thumb_cache[key]
+            # touch: move to end (most recently used)
+            img, est = self._thumb_cache.pop(key)
+            self._thumb_cache[key] = (img, est)
+            return img
         try:
             im = Image.open(path)
-            # ensure we can place on Tk canvas
             if im.mode not in ("RGB", "RGBA"):
                 im = im.convert("RGB")
             im.thumbnail((int(size), int(size)))
             ph = ImageTk.PhotoImage(im)
-            self._thumb_cache[key] = ph
+            est = self._estimate_thumb_bytes(int(size))
+            # insert and evict if necessary
+            self._thumb_cache[key] = (ph, est)
+            self._thumb_cache_est_bytes += est
+            self._evict_cache_if_needed()
             return ph
         except Exception:
-            # corrupted/unreadable image -> no thumb
             return None
+    # ------------------------------------------------
+    def _maybe_purge_cache_on_zoom(self, target: str, old_size: int, new_size: int):
+        """
+        If zoom jumps big (>= 48px or >= 25%), purge most of the cache so memory doesn't balloon.
+        Strategy:
+          - purge entries not matching the new_size (keeps a small slice if sizes are close)
+        """
+        try:
+            if old_size <= 0:
+                old_size = new_size
+            jump_px = abs(int(new_size) - int(old_size))
+            jump_pct = (jump_px / max(1, old_size))
+            big_jump = (jump_px >= 48) or (jump_pct >= 0.25)
+            if not big_jump or not self._thumb_cache:
+                return
+    
+            # rebuild cache keeping only thumbs of the new size
+            keep = OrderedDict()
+            est_bytes = 0
+            for (p, sz), (img, est) in self._thumb_cache.items():
+                if sz == int(new_size):
+                    keep[(p, sz)] = (img, est)
+                    est_bytes += est
+            self._thumb_cache = keep
+            self._thumb_cache_est_bytes = est_bytes
+        except Exception:
+            pass
 
     # ------------------------------------------------
     def toggle_select(self, idx: int):
@@ -1812,12 +1968,18 @@ class ImageRangerGUI:
     def on_zoom_change(self, value: int):
         value = max(self.zoom_min, min(self.zoom_max, int(value)))
         if self.active_zoom_target.get() == "main":
+            old = self._last_main_zoom
             if value != self.main_thumb_size.get():
                 self.main_thumb_size.set(value)
+                self._maybe_purge_cache_on_zoom("main", old, value)
+                self._last_main_zoom = value
                 self.render_grid()
         else:
+            old = self._last_ref_zoom
             if value != self.ref_thumb_size.get():
                 self.ref_thumb_size.set(value)
+                self._maybe_purge_cache_on_zoom("ref", old, value)
+                self._last_ref_zoom = value
                 self.render_reference_strip()
 
     # ----------------Reference actions (hook to your DB + rebuild)---------------
