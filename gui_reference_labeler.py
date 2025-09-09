@@ -1130,29 +1130,29 @@ class CreateLabelDialog(tk.Toplevel):
 # ---- Main IGUI -----------------------------------------------------
 class ImageRangerGUI:
     def __init__(self, root):
-		self.root = root
-		self.root.title("Photo Sorter - Reference Labeling")
+        self.root = root
+        self.root.title("Photo Sorter - Reference Labeling")
 
-		# ===== Excire-style UI state =====
-		self.zoom_min, self.zoom_max = 80, 360
-		self.zoom_value = tk.IntVar(value=160)     # shared slider position
-		self.main_thumb_size = tk.IntVar(value=160)
-		self.ref_thumb_size  = tk.IntVar(value=96)
-		self.active_zoom_target = tk.StringVar(value="main")  # 'main' or 'ref'
-		
-		self.grid_gutter = 10
-		self.selected_indices = set()              # selection in main grid
-		self.current_images = []                   # files shown in main grid
-		self._thumb_cache = {}                     # ((path,size) -> PhotoImage)
+    # ===== Excire-style UI state =====
+        self.zoom_min, self.zoom_max = 80, 360        
+        self.zoom_value = tk.IntVar(value=160)     # shared slider position        
+        self.main_thumb_size = tk.IntVar(value=160)        
+        self.ref_thumb_size  = tk.IntVar(value=96)        
+        self.active_zoom_target = tk.StringVar(value="main")  # 'main' or 'ref'
+        
+        self.grid_gutter = 10
+        self.selected_indices = set()              # selection in main grid
+        self.current_images = []                   # files shown in main grid
+        self._thumb_cache = {}                     # ((path,size) -> PhotoImage)
 
         # workers/cancel (if you have background tasks)
-		self._cancel_event = threading.Event()
-		self._workers = []
+        self._cancel_event = threading.Event()
+        self._workers = []
 
-		# graceful close
-		self._is_closing = False
-		self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-		
+    # graceful close
+        self._is_closing = False
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        
         # styles + sorting state
         self.style = ttk.Style()
         self.sorting = False
@@ -1188,7 +1188,7 @@ class ImageRangerGUI:
         self.apply_styles()
         self.build_layout()
         self.reference_browser.refresh_label_list(auto_select=True)
-		self.set_zoom_target("main")   # initial active grid highlights
+        self.set_zoom_target("main")   # initial active grid highlights
 
         self.gui_log("✅ GUI initialized.")
         self.undo_stack = []
@@ -1211,38 +1211,38 @@ class ImageRangerGUI:
 
 # -----------------------------------------
     def on_close(self):
-	    if getattr(self, "_is_closing", False): return
-	    self._is_closing = True
-	    self.set_status_left("Shutting down…")
-	    try: self._cancel_event.set()
-	    except Exception: pass
-	    try:
-	        for t in getattr(self, "_workers", []):
-	            if t and t.is_alive(): t.join(timeout=3.0)
-	    except Exception: pass
-	    # DB close (optional)
-	    try:
-	        from reference_db import close_db
-	        try: close_db()
-	        except Exception: pass
-	    except Exception: pass
-	    # Release ML resources (optional)
-	    try:
-	        from photo_sorter import release_resources
-	        try: release_resources()
-	        except Exception: pass
-	    except Exception: pass
-	    # Clear caches
-	    try: self._thumb_cache.clear()
-	    except Exception: pass
-	    try:
-	        import gc; gc.collect()
-	    except Exception: pass
-	    try: self.root.destroy()
-	    except Exception: pass
-	    try:
-	        import sys; sys.exit(0)
-	    except Exception: pass
+        if getattr(self, "_is_closing", False): return
+        self._is_closing = True
+        self.set_status_left("Shutting down…")
+        try: self._cancel_event.set()
+        except Exception: pass
+        try:
+            for t in getattr(self, "_workers", []):
+                if t and t.is_alive(): t.join(timeout=3.0)
+        except Exception: pass
+        # DB close (optional)
+        try:
+            from reference_db import close_db
+            try: close_db()
+            except Exception: pass
+        except Exception: pass
+        # Release ML resources (optional)
+        try:
+            from photo_sorter import release_resources
+            try: release_resources()
+            except Exception: pass
+        except Exception: pass
+        # Clear caches
+        try: self._thumb_cache.clear()
+        except Exception: pass
+        try:
+            import gc; gc.collect()
+        except Exception: pass
+        try: self.root.destroy()
+        except Exception: pass
+        try:
+            import sys; sys.exit(0)
+        except Exception: pass
 
 # -----------------------------------------
 
@@ -1389,350 +1389,350 @@ class ImageRangerGUI:
 
     # ---------------- layout ----------------
     def build_layout(self):
-	    # ====== Paned root: sidebar | right ======
-	    self.main_pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashwidth=6, bg="#222")
-	    self.main_pane.pack(fill=tk.BOTH, expand=True)
-	
-	    # Sidebar
-	    self.sidebar = tk.Frame(self.main_pane, width=260, bg="#1f1f1f")
-	    self.main_pane.add(self.sidebar)
-	
-	    # Right
-	    self.right_panel = tk.Frame(self.main_pane, bg="#111")
-	    self.main_pane.add(self.right_panel)
-	
-	    # ====== Top toolbar ======
-	    topbar = tk.Frame(self.right_panel, height=40, bg="#111")
-	    topbar.pack(side=tk.TOP, fill=tk.X)
-	
-	    self.status_left = tk.Label(topbar, text="No tasks at the moment", fg="#bbb", bg="#111")
-	    self.status_left.pack(side=tk.LEFT, padx=10)
-	
-	    # Shared zoom slider
-	    self.zoom = ttk.Scale(
-	        topbar, from_=self.zoom_min, to=self.zoom_max,
-	        orient=tk.HORIZONTAL, variable=self.zoom_value,
-	        command=lambda v: self.on_zoom_change(int(float(v))), length=220
-	    )
-	    self.zoom.pack(side=tk.LEFT, padx=12)
-	
-	    self.status_right = tk.Label(topbar, text="Photos in view: 0   Selected: 0", fg="#bbb", bg="#111")
-	    self.status_right.pack(side=tk.RIGHT, padx=10)
-	
-	    # quick placeholders (swap later with icons)
-	    btnbar = tk.Frame(topbar, bg="#111"); btnbar.pack(side=tk.RIGHT, padx=8)
-	    for txt, cb in [("🗂", self.action_toggle_view), ("↕", self.action_sort_menu),
-	                    ("⭐", self.action_flag_selected), ("⚙", self.action_settings)]:
-	        ttk.Button(btnbar, text=txt, width=2, command=cb).pack(side=tk.LEFT, padx=2)
-	
-	    # ====== Vertical split: reference strip | main grid ======
-	    self.right_split = tk.PanedWindow(self.right_panel, orient=tk.VERTICAL, sashwidth=6, bg="#111")
-	    self.right_split.pack(fill=tk.BOTH, expand=True)
-	
-	    # Reference strip (top)
-	    self.ref_frame = tk.Frame(self.right_split, bg="#141414", height=160,
-	                              highlightthickness=1, highlightbackground="#2a2a2a")
-	    self.right_split.add(self.ref_frame)
-	
-	    # Main grid (bottom)
-	    self.grid_container = tk.Frame(self.right_split, bg="#111",
-	                                   highlightthickness=2, highlightbackground="#69a7ff")
-	    self.right_split.add(self.grid_container)
-	
-	    # Sidebar + Reference strip contents
-	    self.build_sidebar_contents()
-	    self.build_reference_strip()
-	
-	    # ====== Main grid (scrollable) ======
-	    self.canvas = tk.Canvas(self.grid_container, bg="#171717", highlightthickness=0)
-	    self.vbar = ttk.Scrollbar(self.grid_container, orient=tk.VERTICAL, command=self.canvas.yview)
-	    self.canvas.configure(yscrollcommand=self.vbar.set)
-	    self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-	    self.vbar.pack(side=tk.RIGHT, fill=tk.Y)
-	
-	    self.inner = tk.Frame(self.canvas, bg="#171717")
-	    self.canvas_window = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
-	
-	    self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-	    self.canvas.bind("<Configure>", self.on_canvas_resize)
-	
-	    # Make grids activate the shared zoom slider
-	    self.canvas.bind("<Button-1>", lambda e: self.set_zoom_target("main"))
-	    self.inner.bind("<Button-1>",  lambda e: self.set_zoom_target("main"))
-	    self.ref_canvas.bind("<Button-1>", lambda e: self.set_zoom_target("ref"))
-	    self.ref_inner.bind("<Button-1>",  lambda e: self.set_zoom_target("ref"))
+        # ====== Paned root: sidebar | right ======
+        self.main_pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashwidth=6, bg="#222")
+        self.main_pane.pack(fill=tk.BOTH, expand=True)
+    
+        # Sidebar
+        self.sidebar = tk.Frame(self.main_pane, width=260, bg="#1f1f1f")
+        self.main_pane.add(self.sidebar)
+    
+        # Right
+        self.right_panel = tk.Frame(self.main_pane, bg="#111")
+        self.main_pane.add(self.right_panel)
+    
+        # ====== Top toolbar ======
+        topbar = tk.Frame(self.right_panel, height=40, bg="#111")
+        topbar.pack(side=tk.TOP, fill=tk.X)
+    
+        self.status_left = tk.Label(topbar, text="No tasks at the moment", fg="#bbb", bg="#111")
+        self.status_left.pack(side=tk.LEFT, padx=10)
+    
+        # Shared zoom slider
+        self.zoom = ttk.Scale(
+            topbar, from_=self.zoom_min, to=self.zoom_max,
+            orient=tk.HORIZONTAL, variable=self.zoom_value,
+            command=lambda v: self.on_zoom_change(int(float(v))), length=220
+        )
+        self.zoom.pack(side=tk.LEFT, padx=12)
+    
+        self.status_right = tk.Label(topbar, text="Photos in view: 0   Selected: 0", fg="#bbb", bg="#111")
+        self.status_right.pack(side=tk.RIGHT, padx=10)
+    
+        # quick placeholders (swap later with icons)
+        btnbar = tk.Frame(topbar, bg="#111"); btnbar.pack(side=tk.RIGHT, padx=8)
+        for txt, cb in [("🗂", self.action_toggle_view), ("↕", self.action_sort_menu),
+                        ("⭐", self.action_flag_selected), ("⚙", self.action_settings)]:
+            ttk.Button(btnbar, text=txt, width=2, command=cb).pack(side=tk.LEFT, padx=2)
+    
+        # ====== Vertical split: reference strip | main grid ======
+        self.right_split = tk.PanedWindow(self.right_panel, orient=tk.VERTICAL, sashwidth=6, bg="#111")
+        self.right_split.pack(fill=tk.BOTH, expand=True)
+    
+        # Reference strip (top)
+        self.ref_frame = tk.Frame(self.right_split, bg="#141414", height=160,
+                                  highlightthickness=1, highlightbackground="#2a2a2a")
+        self.right_split.add(self.ref_frame)
+    
+        # Main grid (bottom)
+        self.grid_container = tk.Frame(self.right_split, bg="#111",
+                                       highlightthickness=2, highlightbackground="#69a7ff")
+        self.right_split.add(self.grid_container)
+    
+        # Sidebar + Reference strip contents
+        self.build_sidebar_contents()
+        self.build_reference_strip()
+    
+        # ====== Main grid (scrollable) ======
+        self.canvas = tk.Canvas(self.grid_container, bg="#171717", highlightthickness=0)
+        self.vbar = ttk.Scrollbar(self.grid_container, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vbar.set)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.vbar.pack(side=tk.RIGHT, fill=tk.Y)
+    
+        self.inner = tk.Frame(self.canvas, bg="#171717")
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+    
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", self.on_canvas_resize)
+    
+        # Make grids activate the shared zoom slider
+        self.canvas.bind("<Button-1>", lambda e: self.set_zoom_target("main"))
+        self.inner.bind("<Button-1>",  lambda e: self.set_zoom_target("main"))
+        self.ref_canvas.bind("<Button-1>", lambda e: self.set_zoom_target("ref"))
+        self.ref_inner.bind("<Button-1>",  lambda e: self.set_zoom_target("ref"))
 
-	# ----------------- Sidebar scaffolding -----------
-	def build_sidebar_contents(self): 
-	    tabs = tk.Frame(self.sidebar, bg="#1f1f1f"); tabs.pack(fill=tk.X, pady=(8,4))
-	    for name in ("Folders", "Results"):
-	        tk.Button(tabs, text=name, relief=tk.FLAT, bg="#2a2a2a", fg="#ddd",
-	                  activebackground="#3a3a3a", activeforeground="#fff").pack(side=tk.LEFT, padx=6, ipady=2)
-	
-	    lf_results = ttk.LabelFrame(self.sidebar, text="Results"); lf_results.pack(fill=tk.X, padx=8, pady=8)
-	    for label in ("Last Search Results","Find Similar Photos","Find by Keyword","Find Faces",
-	                  "Find People","Find by GPS","Find by text prompt","Find Duplicates"):
-	        ttk.Button(lf_results, text=label, command=lambda L=label: self.sidebar_action(L)).pack(fill=tk.X, pady=2)
-	
-	    lf_col = ttk.LabelFrame(self.sidebar, text="Collections"); lf_col.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-	    top = tk.Frame(lf_col); top.pack(fill=tk.X, pady=(0,6))
-	    ttk.Button(top, text="+ Collection", command=lambda: self.sidebar_action("Add Collection")).pack(side=tk.LEFT)
-	    ttk.Button(top, text="+ Group",      command=lambda: self.sidebar_action("Add Group")).pack(side=tk.LEFT, padx=6)
-	    for name in ("Best of 2023", "Holidays 2020"):
-	        ttk.Button(lf_col, text=name, command=lambda N=name: self.sidebar_action(N)).pack(fill=tk.X, pady=2)
-	
-	def sidebar_action(self, name): self.set_status_left(f"{name} clicked")
+    # ----------------- Sidebar scaffolding -----------
+    def build_sidebar_contents(self): 
+        tabs = tk.Frame(self.sidebar, bg="#1f1f1f"); tabs.pack(fill=tk.X, pady=(8,4))
+        for name in ("Folders", "Results"):
+            tk.Button(tabs, text=name, relief=tk.FLAT, bg="#2a2a2a", fg="#ddd",
+                      activebackground="#3a3a3a", activeforeground="#fff").pack(side=tk.LEFT, padx=6, ipady=2)
+    
+        lf_results = ttk.LabelFrame(self.sidebar, text="Results"); lf_results.pack(fill=tk.X, padx=8, pady=8)
+        for label in ("Last Search Results","Find Similar Photos","Find by Keyword","Find Faces",
+                      "Find People","Find by GPS","Find by text prompt","Find Duplicates"):
+            ttk.Button(lf_results, text=label, command=lambda L=label: self.sidebar_action(L)).pack(fill=tk.X, pady=2)
+    
+        lf_col = ttk.LabelFrame(self.sidebar, text="Collections"); lf_col.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        top = tk.Frame(lf_col); top.pack(fill=tk.X, pady=(0,6))
+        ttk.Button(top, text="+ Collection", command=lambda: self.sidebar_action("Add Collection")).pack(side=tk.LEFT)
+        ttk.Button(top, text="+ Group",      command=lambda: self.sidebar_action("Add Group")).pack(side=tk.LEFT, padx=6)
+        for name in ("Best of 2023", "Holidays 2020"):
+            ttk.Button(lf_col, text=name, command=lambda N=name: self.sidebar_action(N)).pack(fill=tk.X, pady=2)
+    
+    def sidebar_action(self, name): self.set_status_left(f"{name} clicked")
 
-	# ------Reference strip (controls + filmstrip)-----------------------------
-	def build_reference_strip(self):
-	    # controls
-	    bar = tk.Frame(self.ref_frame, bg="#141414"); bar.pack(side=tk.TOP, fill=tk.X)
-	    tk.Label(bar, text="Label:", bg="#141414", fg="#ddd").pack(side=tk.LEFT, padx=(8,4))
-	
-	    self.active_label = tk.StringVar(value="")
-	    self.ref_label_menu = ttk.Combobox(bar, textvariable=self.active_label,
-	                                       values=self.get_all_label_names(), width=18)
-	    self.ref_label_menu.pack(side=tk.LEFT, padx=(0,8))
-	    self.ref_label_menu.bind("<<ComboboxSelected>>", lambda e: self.on_change_active_label())
-	
-	    tk.Label(bar, text="Threshold", bg="#141414", fg="#aaa").pack(side=tk.LEFT, padx=(8,4))
-	    self.ref_thr = tk.DoubleVar(value=0.30)
-	    ttk.Scale(bar, from_=0.05, to=0.90, orient=tk.HORIZONTAL, variable=self.ref_thr,
-	              command=lambda v: self.on_change_threshold(float(v)), length=160).pack(side=tk.LEFT, padx=(0,10))
-	    self.lbl_thr_val = tk.Label(bar, text="0.30", bg="#141414", fg="#aaa"); self.lbl_thr_val.pack(side=tk.LEFT)
-	
-	    btns = tk.Frame(bar, bg="#141414"); btns.pack(side=tk.RIGHT, padx=8)
-	    ttk.Button(btns, text="Add from Selection", command=self.add_selected_to_label).pack(side=tk.LEFT, padx=4)
-	    ttk.Button(btns, text="Remove Selected",    command=self.remove_selected_refs).pack(side=tk.LEFT, padx=4)
-	    ttk.Button(btns, text="Rebuild",            command=lambda: self.rebuild_embeddings_async(only_label=self.active_label.get())).pack(side=tk.LEFT, padx=4)
-	    ttk.Button(btns, text="Delete Label",       command=self.delete_active_label).pack(side=tk.LEFT, padx=4)
-	
-	    # filmstrip (horizontal scroll)
-	    strip = tk.Frame(self.ref_frame, bg="#141414"); strip.pack(fill=tk.BOTH, expand=True)
-	    self.ref_canvas = tk.Canvas(strip, bg="#141414", height=110, highlightthickness=0)
-	    self.ref_hbar = ttk.Scrollbar(strip, orient=tk.HORIZONTAL, command=self.ref_canvas.xview)
-	    self.ref_canvas.configure(xscrollcommand=self.ref_hbar.set)
-	    self.ref_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-	    self.ref_hbar.pack(side=tk.BOTTOM, fill=tk.X)
-	
-	    self.ref_inner = tk.Frame(self.ref_canvas, bg="#141414")
-	    self.ref_canvas_window = self.ref_canvas.create_window((0,0), window=self.ref_inner, anchor="nw")
-	    self.ref_inner.bind("<Configure>", lambda e: self.ref_canvas.configure(scrollregion=self.ref_canvas.bbox("all")))
+    # ------Reference strip (controls + filmstrip)-----------------------------
+    def build_reference_strip(self):
+        # controls
+        bar = tk.Frame(self.ref_frame, bg="#141414"); bar.pack(side=tk.TOP, fill=tk.X)
+        tk.Label(bar, text="Label:", bg="#141414", fg="#ddd").pack(side=tk.LEFT, padx=(8,4))
+    
+        self.active_label = tk.StringVar(value="")
+        self.ref_label_menu = ttk.Combobox(bar, textvariable=self.active_label,
+                                           values=self.get_all_label_names(), width=18)
+        self.ref_label_menu.pack(side=tk.LEFT, padx=(0,8))
+        self.ref_label_menu.bind("<<ComboboxSelected>>", lambda e: self.on_change_active_label())
+    
+        tk.Label(bar, text="Threshold", bg="#141414", fg="#aaa").pack(side=tk.LEFT, padx=(8,4))
+        self.ref_thr = tk.DoubleVar(value=0.30)
+        ttk.Scale(bar, from_=0.05, to=0.90, orient=tk.HORIZONTAL, variable=self.ref_thr,
+                  command=lambda v: self.on_change_threshold(float(v)), length=160).pack(side=tk.LEFT, padx=(0,10))
+        self.lbl_thr_val = tk.Label(bar, text="0.30", bg="#141414", fg="#aaa"); self.lbl_thr_val.pack(side=tk.LEFT)
+    
+        btns = tk.Frame(bar, bg="#141414"); btns.pack(side=tk.RIGHT, padx=8)
+        ttk.Button(btns, text="Add from Selection", command=self.add_selected_to_label).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="Remove Selected",    command=self.remove_selected_refs).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="Rebuild",            command=lambda: self.rebuild_embeddings_async(only_label=self.active_label.get())).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="Delete Label",       command=self.delete_active_label).pack(side=tk.LEFT, padx=4)
+    
+        # filmstrip (horizontal scroll)
+        strip = tk.Frame(self.ref_frame, bg="#141414"); strip.pack(fill=tk.BOTH, expand=True)
+        self.ref_canvas = tk.Canvas(strip, bg="#141414", height=110, highlightthickness=0)
+        self.ref_hbar = ttk.Scrollbar(strip, orient=tk.HORIZONTAL, command=self.ref_canvas.xview)
+        self.ref_canvas.configure(xscrollcommand=self.ref_hbar.set)
+        self.ref_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.ref_hbar.pack(side=tk.BOTTOM, fill=tk.X)
+    
+        self.ref_inner = tk.Frame(self.ref_canvas, bg="#141414")
+        self.ref_canvas_window = self.ref_canvas.create_window((0,0), window=self.ref_inner, anchor="nw")
+        self.ref_inner.bind("<Configure>", lambda e: self.ref_canvas.configure(scrollregion=self.ref_canvas.bbox("all")))
 
-	# -----------------------------------------------
-	def render_reference_strip(self, label=None):
-	    for w in self.ref_inner.winfo_children(): w.destroy()
-	    label = label or self.active_label.get()
-	    if not label: return
-	
-	    try:
-	        from reference_db import get_all_references
-	        refs = [r["path"] for r in get_all_references() if r["label"] == label]
-	    except Exception:
-	        refs = []
-	
-	    size = int(self.ref_thumb_size.get())
-	    gutter = 8
-	    self._ref_thumbs = []
-	
-	    for i, p in enumerate(refs):
-	        f = tk.Frame(self.ref_inner, width=size, height=size, bg="#1c1c1c",
-	                     highlightthickness=2, highlightbackground="#2a2a2a")
-	        f.pack(side=tk.LEFT, padx=(gutter,0), pady=6); f.pack_propagate(False)
-	        ph = self.load_thumb(p, size)
-	        if ph:
-	            lbl = tk.Label(f, image=ph, bg="#1c1c1c"); lbl.image = ph
-	            lbl.pack(fill=tk.BOTH, expand=True)
-	
-	        def on_click(e, frame=f):
-	            bg = frame.cget("highlightbackground")
-	            frame.config(highlightbackground="#69a7ff" if bg != "#69a7ff" else "#2a2a2a")
-	        f.bind("<Button-1>", on_click)
-	        for w in f.winfo_children(): w.bind("<Button-1>", on_click)
-	
-	        self._ref_thumbs.append((f, p))
-	
-	    # adjust height to size
-	    try:
-	        self.ref_canvas.config(height=max(110, size + 14))
-	    except Exception: pass
-	
-	    self.ref_inner.update_idletasks()
-	    bbox = self.ref_canvas.bbox(self.ref_canvas_window)
-	    if bbox:
-	        width = bbox[2] - bbox[0]
-	        self.ref_canvas.configure(scrollregion=(0,0,width,max(110, size+14)))
+    # -----------------------------------------------
+    def render_reference_strip(self, label=None):
+        for w in self.ref_inner.winfo_children(): w.destroy()
+        label = label or self.active_label.get()
+        if not label: return
+    
+        try:
+            from reference_db import get_all_references
+            refs = [r["path"] for r in get_all_references() if r["label"] == label]
+        except Exception:
+            refs = []
+    
+        size = int(self.ref_thumb_size.get())
+        gutter = 8
+        self._ref_thumbs = []
+    
+        for i, p in enumerate(refs):
+            f = tk.Frame(self.ref_inner, width=size, height=size, bg="#1c1c1c",
+                         highlightthickness=2, highlightbackground="#2a2a2a")
+            f.pack(side=tk.LEFT, padx=(gutter,0), pady=6); f.pack_propagate(False)
+            ph = self.load_thumb(p, size)
+            if ph:
+                lbl = tk.Label(f, image=ph, bg="#1c1c1c"); lbl.image = ph
+                lbl.pack(fill=tk.BOTH, expand=True)
+    
+            def on_click(e, frame=f):
+                bg = frame.cget("highlightbackground")
+                frame.config(highlightbackground="#69a7ff" if bg != "#69a7ff" else "#2a2a2a")
+            f.bind("<Button-1>", on_click)
+            for w in f.winfo_children(): w.bind("<Button-1>", on_click)
+    
+            self._ref_thumbs.append((f, p))
+    
+        # adjust height to size
+        try:
+            self.ref_canvas.config(height=max(110, size + 14))
+        except Exception: pass
+    
+        self.ref_inner.update_idletasks()
+        bbox = self.ref_canvas.bbox(self.ref_canvas_window)
+        if bbox:
+            width = bbox[2] - bbox[0]
+            self.ref_canvas.configure(scrollregion=(0,0,width,max(110, size+14)))
 
-	# -----------------------------------------------
-	def get_all_label_names(self):
-	    try:
-	        from reference_db import get_all_labels
-	        return get_all_labels()
-	    except Exception:
-	        return []
-	
-	def on_change_active_label(self):
-	    label = self.active_label.get()
-	    try:
-	        from reference_db import get_threshold_for_label
-	        t = get_threshold_for_label(label) or 0.30
-	        self.ref_thr.set(float(t)); self.lbl_thr_val.config(text=f"{float(t):.2f}")
-	    except Exception:
-	        pass
-	    self.render_reference_strip(label)
-	
-	def on_change_threshold(self, v):
-	    self.lbl_thr_val.config(text=f"{float(v):.2f}")
-	    label = self.active_label.get()
-	    if not label: return
-	    try:
-	        from reference_db import set_threshold_for_label
-	        set_threshold_for_label(label, float(v))
-	    except Exception:
-	        pass
-	# --------------Main grid (zoomable + multi-select)--------------------------------
-	def on_canvas_resize(self, event):
-	    self.render_grid()
-	
-	def render_grid(self, images=None):
-	    if images is not None:
-	        self.current_images = images
-	
-	    for w in self.inner.winfo_children(): w.destroy()
-	
-	    if not self.current_images:
-	        self.set_status_right(0, len(self.selected_indices)); return
-	
-	    gutter = self.grid_gutter
-	    size = int(self.main_thumb_size.get())
-	    cell = size + gutter
-	
-	    avail_w = self.canvas.winfo_width() or self.canvas.winfo_reqwidth()
-	    cols = max(1, avail_w // cell)
-	
-	    self.thumb_buttons = []
-	    for idx, path in enumerate(self.current_images):
-	        r, c = divmod(idx, cols)
-	        frame = tk.Frame(self.inner, width=size, height=size, bg="#202020", highlightthickness=2)
-	        frame.grid(row=r, column=c, padx=gutter//2, pady=gutter//2); frame.grid_propagate(False)
-	
-	        ph = self.load_thumb(path, size)
-	        if ph:
-	            lbl = tk.Label(frame, image=ph, bg="#202020"); lbl.image = ph
-	            lbl.pack(fill=tk.BOTH, expand=True)
-	
-	        frame.config(highlightbackground="#69a7ff" if idx in self.selected_indices else "#2a2a2a")
-	
-	        def on_click(e, i=idx): self.toggle_select(i)
-	        def on_ctrl_click(e, i=idx): self.toggle_select(i)
-	        frame.bind("<Button-1>", on_click)
-	        frame.bind("<Control-Button-1>", on_ctrl_click)
-	        for w in frame.winfo_children():
-	            w.bind("<Button-1>", on_click)
-	            w.bind("<Control-Button-1>", on_ctrl_click)
-	
-	        self.thumb_buttons.append(frame)
-	
-	    self.set_status_right(len(self.current_images), len(self.selected_indices))
-	    self.inner.update_idletasks()
-	    self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+    # -----------------------------------------------
+    def get_all_label_names(self):
+        try:
+            from reference_db import get_all_labels
+            return get_all_labels()
+        except Exception:
+            return []
+    
+    def on_change_active_label(self):
+        label = self.active_label.get()
+        try:
+            from reference_db import get_threshold_for_label
+            t = get_threshold_for_label(label) or 0.30
+            self.ref_thr.set(float(t)); self.lbl_thr_val.config(text=f"{float(t):.2f}")
+        except Exception:
+            pass
+        self.render_reference_strip(label)
+    
+    def on_change_threshold(self, v):
+        self.lbl_thr_val.config(text=f"{float(v):.2f}")
+        label = self.active_label.get()
+        if not label: return
+        try:
+            from reference_db import set_threshold_for_label
+            set_threshold_for_label(label, float(v))
+        except Exception:
+            pass
+    # --------------Main grid (zoomable + multi-select)--------------------------------
+    def on_canvas_resize(self, event):
+        self.render_grid()
+    
+    def render_grid(self, images=None):
+        if images is not None:
+            self.current_images = images
+    
+        for w in self.inner.winfo_children(): w.destroy()
+    
+        if not self.current_images:
+            self.set_status_right(0, len(self.selected_indices)); return
+    
+        gutter = self.grid_gutter
+        size = int(self.main_thumb_size.get())
+        cell = size + gutter
+    
+        avail_w = self.canvas.winfo_width() or self.canvas.winfo_reqwidth()
+        cols = max(1, avail_w // cell)
+    
+        self.thumb_buttons = []
+        for idx, path in enumerate(self.current_images):
+            r, c = divmod(idx, cols)
+            frame = tk.Frame(self.inner, width=size, height=size, bg="#202020", highlightthickness=2)
+            frame.grid(row=r, column=c, padx=gutter//2, pady=gutter//2); frame.grid_propagate(False)
+    
+            ph = self.load_thumb(path, size)
+            if ph:
+                lbl = tk.Label(frame, image=ph, bg="#202020"); lbl.image = ph
+                lbl.pack(fill=tk.BOTH, expand=True)
+    
+            frame.config(highlightbackground="#69a7ff" if idx in self.selected_indices else "#2a2a2a")
+    
+            def on_click(e, i=idx): self.toggle_select(i)
+            def on_ctrl_click(e, i=idx): self.toggle_select(i)
+            frame.bind("<Button-1>", on_click)
+            frame.bind("<Control-Button-1>", on_ctrl_click)
+            for w in frame.winfo_children():
+                w.bind("<Button-1>", on_click)
+                w.bind("<Control-Button-1>", on_ctrl_click)
+    
+            self.thumb_buttons.append(frame)
+    
+        self.set_status_right(len(self.current_images), len(self.selected_indices))
+        self.inner.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
-	# ------------------------------------------------
-	def toggle_select(self, idx: int):
-	    if idx in self.selected_indices: self.selected_indices.remove(idx)
-	    else: self.selected_indices.add(idx)
-	    try:
-	        frame = self.thumb_buttons[idx]
-	        frame.config(highlightbackground="#69a7ff" if idx in self.selected_indices else "#2a2a2a")
-	    except Exception:
-	        pass
-	    self.set_status_right(len(self.current_images), len(self.selected_indices))
+    # ------------------------------------------------
+    def toggle_select(self, idx: int):
+        if idx in self.selected_indices: self.selected_indices.remove(idx)
+        else: self.selected_indices.add(idx)
+        try:
+            frame = self.thumb_buttons[idx]
+            frame.config(highlightbackground="#69a7ff" if idx in self.selected_indices else "#2a2a2a")
+        except Exception:
+            pass
+        self.set_status_right(len(self.current_images), len(self.selected_indices))
 
-	# ----------------One slider → active grid-------------------------------
-	def set_zoom_target(self, target: str):
-	    if target not in ("main","ref"): return
-	    self.active_zoom_target.set(target)
-	    self.zoom_value.set(self.main_thumb_size.get() if target=="main" else self.ref_thumb_size.get())
-	
-	    # visual cue (blue outline on active)
-	    try:
-	        self.grid_container.config(highlightthickness=2 if target=="main" else 1,
-	                                   highlightbackground="#69a7ff" if target=="main" else "#2a2a2a")
-	        self.ref_frame.config(highlightthickness=2 if target=="ref" else 1,
-	                              highlightbackground="#69a7ff" if target=="ref" else "#2a2a2a")
-	    except Exception:
-	        pass
-	
-	    self.set_status_left(f"Zoom target: {'Main Grid' if target=='main' else 'Reference Strip'}")
-	
-	def on_zoom_change(self, value: int):
-	    value = max(self.zoom_min, min(self.zoom_max, int(value)))
-	    if self.active_zoom_target.get() == "main":
-	        if value != self.main_thumb_size.get():
-	            self.main_thumb_size.set(value)
-	            self.render_grid()
-	    else:
-	        if value != self.ref_thumb_size.get():
-	            self.ref_thumb_size.set(value)
-	            self.render_reference_strip()
+    # ----------------One slider → active grid-------------------------------
+    def set_zoom_target(self, target: str):
+        if target not in ("main","ref"): return
+        self.active_zoom_target.set(target)
+        self.zoom_value.set(self.main_thumb_size.get() if target=="main" else self.ref_thumb_size.get())
+    
+        # visual cue (blue outline on active)
+        try:
+            self.grid_container.config(highlightthickness=2 if target=="main" else 1,
+                                       highlightbackground="#69a7ff" if target=="main" else "#2a2a2a")
+            self.ref_frame.config(highlightthickness=2 if target=="ref" else 1,
+                                  highlightbackground="#69a7ff" if target=="ref" else "#2a2a2a")
+        except Exception:
+            pass
+    
+        self.set_status_left(f"Zoom target: {'Main Grid' if target=='main' else 'Reference Strip'}")
+    
+    def on_zoom_change(self, value: int):
+        value = max(self.zoom_min, min(self.zoom_max, int(value)))
+        if self.active_zoom_target.get() == "main":
+            if value != self.main_thumb_size.get():
+                self.main_thumb_size.set(value)
+                self.render_grid()
+        else:
+            if value != self.ref_thumb_size.get():
+                self.ref_thumb_size.set(value)
+                self.render_reference_strip()
 
-	# ----------------Reference actions (hook to your DB + rebuild)---------------
-	def add_selected_to_label(self):
-	    label = self.active_label.get()
-	    if not label or not self.selected_indices: return
-	    to_add = [self.current_images[i] for i in sorted(self.selected_indices) if 0 <= i < len(self.current_images)]
-	    try:
-	        from reference_db import insert_reference
-	        for p in to_add: insert_reference(p, label)
-	        self.rebuild_embeddings_async(only_label=label)
-	        self.render_reference_strip(label)
-	        self.set_status_left(f"Added {len(to_add)} to '{label}'.")
-	    except Exception as e:
-	        self.set_status_left(f"Add failed: {e}")
-	
-	def remove_selected_refs(self):
-	    label = self.active_label.get()
-	    if not label: return
-	    to_remove = [path for frame, path in getattr(self, "_ref_thumbs", [])
-	                 if frame.cget("highlightbackground") == "#69a7ff"]
-	    if not to_remove: return
-	    try:
-	        from reference_db import delete_reference
-	        for p in to_remove: delete_reference(p)
-	        self.rebuild_embeddings_async(only_label=label)
-	        self.render_reference_strip(label)
-	        self.set_status_left(f"Removed {len(to_remove)} from '{label}'.")
-	    except Exception as e:
-	        self.set_status_left(f"Remove failed: {e}")
-	
-	def delete_active_label(self):
-	    label = self.active_label.get()
-	    if not label: return
-	    try:
-	        # use your existing label delete function
-	        self.reference_browser.delete_label_all(label)
-	    except Exception:
-	        pass
-	    self.active_label.set("")
-	    try:
-	        self.ref_label_menu.configure(values=self.get_all_label_names())
-	    except Exception:
-	        pass
-	    self.render_reference_strip("")
+    # ----------------Reference actions (hook to your DB + rebuild)---------------
+    def add_selected_to_label(self):
+        label = self.active_label.get()
+        if not label or not self.selected_indices: return
+        to_add = [self.current_images[i] for i in sorted(self.selected_indices) if 0 <= i < len(self.current_images)]
+        try:
+            from reference_db import insert_reference
+            for p in to_add: insert_reference(p, label)
+            self.rebuild_embeddings_async(only_label=label)
+            self.render_reference_strip(label)
+            self.set_status_left(f"Added {len(to_add)} to '{label}'.")
+        except Exception as e:
+            self.set_status_left(f"Add failed: {e}")
+    
+    def remove_selected_refs(self):
+        label = self.active_label.get()
+        if not label: return
+        to_remove = [path for frame, path in getattr(self, "_ref_thumbs", [])
+                     if frame.cget("highlightbackground") == "#69a7ff"]
+        if not to_remove: return
+        try:
+            from reference_db import delete_reference
+            for p in to_remove: delete_reference(p)
+            self.rebuild_embeddings_async(only_label=label)
+            self.render_reference_strip(label)
+            self.set_status_left(f"Removed {len(to_remove)} from '{label}'.")
+        except Exception as e:
+            self.set_status_left(f"Remove failed: {e}")
+    
+    def delete_active_label(self):
+        label = self.active_label.get()
+        if not label: return
+        try:
+            # use your existing label delete function
+            self.reference_browser.delete_label_all(label)
+        except Exception:
+            pass
+        self.active_label.set("")
+        try:
+            self.ref_label_menu.configure(values=self.get_all_label_names())
+        except Exception:
+            pass
+        self.render_reference_strip("")
 
-	# -----------------------------------------------
-	def set_status_left(self, msg):
-	    try: self.status_left.config(text=msg)
-	    except Exception: pass
-	
-	def set_status_right(self, in_view: int, selected: int):
-	    try: self.status_right.config(text=f"Photos in view: {in_view}   Selected: {selected}")
-	    except Exception: pass
-	
-	def action_toggle_view(self): pass
-	def action_sort_menu(self): pass
-	def action_flag_selected(self): pass
-	def action_settings(self): pass
+    # -----------------------------------------------
+    def set_status_left(self, msg):
+        try: self.status_left.config(text=msg)
+        except Exception: pass
+    
+    def set_status_right(self, in_view: int, selected: int):
+        try: self.status_right.config(text=f"Photos in view: {in_view}   Selected: {selected}")
+        except Exception: pass
+    
+    def action_toggle_view(self): pass
+    def action_sort_menu(self): pass
+    def action_flag_selected(self): pass
+    def action_settings(self): pass
 
 
     # ---------------- modal confirm ----------------
