@@ -1437,21 +1437,84 @@ class ImageRangerGUI:
 
     # ---------------- embeddings rebuild (debounced + threaded) ----------------
 
+    #def rebuild_embeddings_async(self, only_label=None):
+    #    """Threaded rebuild + spinner + button disable."""
+    #    if getattr(self, "_cancel_event", None) and self._cancel_event.is_set():
+    #        return
+    #
+    #    self.begin_busy("Rebuilding embeddings…")
+    
+    #    def _job():
+    #        err = None
+    #        try:
+    #            from photo_sorter import build_reference_embeddings_from_db
+    #            build_reference_embeddings_from_db(only_label=only_label)
+    #        except Exception as e:
+    #            err = e
+    #        # back to UI thread
+    #        def _done():
+    #            if err:
+    #                self.end_busy(f"Rebuild failed: {err}")
+    #            else:
+    #                self.end_busy("✅ Embeddings rebuilt.")
+    #        try:
+    #            self.root.after(0, _done)
+    #        except Exception:
+    #            pass
+    #
+    #    t = threading.Thread(target=_job, daemon=True)
+    #    t.start()
+    #    try:
+    #        self._workers.append(t)
+    #    except Exception:
+    #        pass
+
+# ------------------------Debounce multiple rebuild requests into one."--------------------------
+    # ---- Debounce state (keep if you already have it) ----
+    # self._rebuild_after_id = None
+    # self._rebuild_last_label = None
+    
+    def schedule_rebuild_embeddings(self, only_label=None, delay_ms=400):
+        """Debounce multiple rebuild requests into one; accepts label but will ignore it if backend doesn't support it."""
+        self._rebuild_last_label = (only_label or "").strip() or None
+        if self._rebuild_after_id is not None:
+            try: self.root.after_cancel(self._rebuild_after_id)
+            except Exception: pass
+        self._rebuild_after_id = self.root.after(delay_ms, self._run_rebuild_coalesced)
+    
+    def _run_rebuild_coalesced(self):
+        self._rebuild_after_id = None
+        label = self._rebuild_last_label
+        self._rebuild_last_label = None
+        self.rebuild_embeddings_async(only_label=label)
+    
     def rebuild_embeddings_async(self, only_label=None):
-        """Threaded rebuild + spinner + button disable."""
+        """Threaded rebuild + spinner; auto-detects whether backend supports 'only_label'."""
         if getattr(self, "_cancel_event", None) and self._cancel_event.is_set():
             return
     
         self.begin_busy("Rebuilding embeddings…")
     
         def _job():
+            import inspect
             err = None
             try:
                 from photo_sorter import build_reference_embeddings_from_db
-                build_reference_embeddings_from_db(only_label=only_label)
+                # detect if function accepts 'only_label'
+                sig = None
+                try:
+                    sig = inspect.signature(build_reference_embeddings_from_db)
+                except Exception:
+                    sig = None
+    
+                if sig and "only_label" in sig.parameters and only_label:
+                    build_reference_embeddings_from_db(only_label=only_label)
+                else:
+                    # fallback: call without kwarg
+                    build_reference_embeddings_from_db()
             except Exception as e:
                 err = e
-            # back to UI thread
+    
             def _done():
                 if err:
                     self.end_busy(f"Rebuild failed: {err}")
@@ -1462,33 +1525,11 @@ class ImageRangerGUI:
             except Exception:
                 pass
     
+        import threading
         t = threading.Thread(target=_job, daemon=True)
         t.start()
-        try:
-            self._workers.append(t)
-        except Exception:
-            pass
-
-# ------------------------Debounce multiple rebuild requests into one."--------------------------
-    def schedule_rebuild_embeddings(self, only_label=None, delay_ms=400):
-        """Debounce multiple rebuild requests into one."""
-        self._rebuild_last_label = only_label
-        # cancel previous scheduled call
-        if self._rebuild_after_id is not None:
-            try:
-                self.root.after_cancel(self._rebuild_after_id)
-            except Exception:
-                pass
-        # schedule a new one
-        self._rebuild_after_id = self.root.after(
-            delay_ms, lambda: self._run_rebuild_coalesced()
-        )
-    
-    def _run_rebuild_coalesced(self):
-        self._rebuild_after_id = None
-        label = self._rebuild_last_label
-        self._rebuild_last_label = None
-        self.rebuild_embeddings_async(only_label=label)
+        try: self._workers.append(t)
+        except Exception: pass
 
 # --------------------------------------------------------------------
     def _rebuild_do(self, only_label: str | None):
