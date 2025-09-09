@@ -1680,10 +1680,24 @@ class ImageRangerGUI:
         tk.Label(bar, text="Label:", bg="#141414", fg="#ddd").pack(side=tk.LEFT, padx=(8,4))
     
         self.active_label = tk.StringVar(value="")
-        self.ref_label_menu = ttk.Combobox(bar, textvariable=self.active_label,
-                                           values=self.get_all_label_names(), width=18)
-        self.ref_label_menu.pack(side=tk.LEFT, padx=(0,8))
+        self.ref_label_menu = ttk.Combobox(
+            bar,
+            textvariable=self.active_label,
+            values=self.get_all_label_names(),
+            width=18,
+            state="normal"   # ← allow typing a new label name
+        )
+        self.ref_label_menu.pack(side=tk.LEFT, padx=(0,6))
         self.ref_label_menu.bind("<<ComboboxSelected>>", lambda e: self.on_change_active_label())
+        
+        # + New Label button
+        btn_new_label = ttk.Button(bar, text="+", width=3, command=self.create_label_from_selection)
+        btn_new_label.pack(side=tk.LEFT, padx=(0,8))
+        
+        # (optional) remember to disable it during busy mode
+        if not hasattr(self, "_buttons_to_disable"):
+            self._buttons_to_disable = []
+        self._buttons_to_disable.append(btn_new_label)
     
         tk.Label(bar, text="Threshold", bg="#141414", fg="#aaa").pack(side=tk.LEFT, padx=(8,4))
         self.ref_thr = tk.DoubleVar(value=0.30)
@@ -1806,7 +1820,78 @@ class ImageRangerGUI:
             try: b.configure(state=tk.NORMAL)
             except Exception: pass
 
+    #----------------------------------------------
+    def _sanitize_label(self, s: str) -> str:
+        s = (s or "").strip()
+        # simple cleanup; adjust to your rules if needed
+        bad = '<>:"/\\|?*'
+        for ch in bad:
+            s = s.replace(ch, "_")
+        return s
+    
+    def _ensure_label_registered(self, label: str):
+        """Optional: set default threshold so the label appears in lists, even if your DB doesn't have a 'labels' table."""
+        try:
+            from reference_db import set_threshold_for_label
+            set_threshold_for_label(label, 0.30)
+        except Exception:
+            # fine if unsupported
+            pass
+    
+    def _refresh_label_list_and_select(self, label: str):
+        try:
+            labels = self.get_all_label_names()
+            if label not in labels:
+                labels = labels + [label]
+            self.ref_label_menu.configure(values=labels)
+            self.active_label.set(label)
+        except Exception:
+            self.active_label.set(label)
+    
+    def create_label_from_selection(self):
+        """
+        Create (or select) a label. If there are selected images in the main grid,
+        offer to add them immediately as references.
+        """
+        from tkinter import simpledialog, messagebox
+        current = self.active_label.get().strip()
+        prompt_default = current if current else ""
+        name = simpledialog.askstring("New label", "Enter label name:", initialvalue=prompt_default)
+        if not name:
+            return
+        label = self._sanitize_label(name)
+        if not label:
+            messagebox.showwarning("Invalid", "Label name is empty.")
+            return
+    
+        # register default threshold so label is visible (if supported)
+        self._ensure_label_registered(label)
+        self._refresh_label_list_and_select(label)
+    
+        # if user has selected photos in the main grid, ask to add them now
+        if self.selected_indices:
+            if messagebox.askyesno("Add references", f"Add {len(self.selected_indices)} selected photo(s) to '{label}'?"):
+                try:
+                    from reference_db import insert_reference
+                    to_add = [self.current_images[i] for i in sorted(self.selected_indices) if 0 <= i < len(self.current_images)]
+                    added = 0
+                    for p in to_add:
+                        try:
+                            insert_reference(p, label)
+                            added += 1
+                        except Exception:
+                            pass
+                    self.set_status_left(f"Added {added} reference(s) to '{label}'. Rebuilding…")
+                    self.render_reference_strip(label)
+                    self.schedule_rebuild_embeddings(only_label=label)
+                except Exception as e:
+                    self.set_status_left(f"Add failed: {e}")
+        else:
+            self.set_status_left(f"Label '{label}' created. Select photos and click 'Add from Selection'.")
+            self.render_reference_strip(label)
 
+
+    
     # ----------------------------------------------
     def choose_folder(self):
         from tkinter import filedialog, messagebox
