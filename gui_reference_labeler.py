@@ -1,4 +1,5 @@
-# gui_reference_labeler
+# gui_reference_labeler.py
+# Verion 6.5 dated 20250909
 # Photo Sorter - Reference Labeling (single-file, working layout)
 # Adds:
 #   • Bottom black scrollable log console (dual: GUI + stdout)
@@ -54,6 +55,105 @@ SETTINGS_DEFAULT = {
     "reference_root":      os.path.join(os.getcwd(), "references"),   # ⬅️ NEW
 }
 
+#---------------UndoStack ----------------------------
+class UndoStack:
+    def __init__(self, limit: int = 50):
+        self._stack = []
+        self._limit = limit
+    def push(self, action: dict):
+        self._stack.append(action)
+        if len(self._stack) > self._limit:
+            self._stack.pop(0)
+    def pop(self):
+        return self._stack.pop() if self._stack else None
+    def clear(self):
+        self._stack.clear()
+
+# --------------------------------------------------------
+
+import os
+import shutil
+import time
+from pathlib import Path
+
+try:
+    from send2trash import send2trash  # pip install Send2Trash
+except Exception:
+    send2trash = None
+
+
+def _ensure_dir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
+
+
+def _unique_path(dest_dir: Path, name: str) -> Path:
+    """
+    Make a unique destination path by suffixing -1, -2, ... if needed.
+    """
+    candidate = dest_dir / name
+    if not candidate.exists():
+        return candidate
+    stem = candidate.stem
+    suffix = candidate.suffix
+    i = 1
+    while True:
+        alt = dest_dir / f"{stem}-{i}{suffix}"
+        if not alt.exists():
+            return alt
+        i += 1
+
+
+def _module_trash_root() -> Path:
+    """
+    A per-app trash folder (used when Send2Trash is unavailable).
+    Placed next to the script as `.trash`.
+    """
+    here = Path(__file__).resolve().parent
+    t = here / ".trash"
+    _ensure_dir(t)
+    return t
+
+
+def _trash_move_file(file_path: str) -> tuple[bool, str | None]:
+    """
+    Try to delete (prefer sending to OS recycle bin). Return (ok, detail).
+    `detail` is either a message ('recycle') or the fallback dest path.
+    """
+    p = Path(file_path)
+    if not p.exists():
+        return False, "not-found"
+    try:
+        if send2trash is not None:
+            send2trash(str(p))
+            return True, "recycle"
+        # Fallback: move into app-local .trash
+        trash_root = _module_trash_root()
+        dest = _unique_path(trash_root, p.name)
+        shutil.move(str(p), str(dest))
+        return True, str(dest)
+    except Exception as e:
+        return False, f"error: {e!s}"
+
+
+def _trash_move_label_folder(label_dir: str) -> tuple[bool, str | None]:
+    """
+    Delete an entire label folder. Same behavior as files.
+    """
+    d = Path(label_dir)
+    if not d.exists():
+        return False, "not-found"
+    try:
+        if send2trash is not None:
+            send2trash(str(d))
+            return True, "recycle"
+        trash_root = _module_trash_root()
+        dest = _unique_path(trash_root, d.name)
+        shutil.move(str(d), str(dest))
+        return True, str(dest)
+    except Exception as e:
+        return False, f"error: {e!s}"
+
+
 def _settings_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_settings.json")
 
@@ -83,11 +183,6 @@ except Exception:  # pragma: no cover
     def purge_missing_references() -> int:
         return 0
 
-try:
-    from photo_sorter import build_reference_embeddings_for_label as _build_label_embeddings
-except Exception:
-    _build_label_embeddings = None  # fallback to full rebuild if not available
-
 from photo_sorter import (
     build_reference_embeddings_from_db,
     sort_photos_with_embeddings_from_folder_using_db
@@ -103,6 +198,7 @@ DB_PATH = "reference_data.db"
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
+#-----------------------------
 # --- Global thumbnail cache (LRU) ---
 _THUMB_CACHE = {}
 _THUMB_CACHE_ORDER = []
@@ -126,25 +222,9 @@ def _thumbcache_put(key, value):
             del _THUMB_CACHE[old]
         except Exception:
             pass
-def get_reference_root() -> str:
-    root = SETTINGS.get("reference_root") or os.path.join(os.getcwd(), "References")
-    try:
-        os.makedirs(root, exist_ok=True)
-    except Exception:
-        # fallback to cwd if path is not permitted
-        root = os.path.join(os.getcwd(), "References")
-        os.makedirs(root, exist_ok=True)
-    return root
-
-def set_reference_root(path: str):
-    SETTINGS["reference_root"] = path
-    save_settings(SETTINGS)
-
-def get_label_folder_path(label: str) -> str:
-    return os.path.join(get_reference_root(), label)
-
 
 #-----------------------------
+
 def unique_copy_or_move(src: str, dst_folder: str, keep_original=False) -> str:
     """Copy (or move) file to dst_folder with a short unique prefix; returns destination path."""
     ensure_dir(dst_folder)
@@ -166,9 +246,8 @@ def _labels_from_entries() -> list[str]:
     except Exception:
         return []
         
-def get_reference_root() -> str:
-#    os.makedirs(root, exist_ok=True)
-#    prefer user setting; else default to ./References under the current app folder
+def get_reference_root():
+    # prefer user setting; else default to ./References under the current app folder
     root = SETTINGS.get("reference_root") or os.path.join(os.getcwd(), "References")
     root = os.path.normpath(root)
 
@@ -195,6 +274,8 @@ def get_reference_root() -> str:
             root = os.getcwd()
 
     return root
+
+    
 
 def get_label_folder_path(label: str) -> str:
     folder = os.path.join(get_reference_root(), label)
@@ -251,6 +332,7 @@ def _write_or_refresh_metadata(label: str, threshold: float | None = None):
             json.dump(data, f, indent=2)
     except Exception:
         pass  # non-fatal
+
 
 # ---- Visual Logger --------------------------------------------
 
@@ -319,48 +401,25 @@ def _bind_horizontal_mousewheel(canvas: tk.Canvas):
 
 init_db()
 
-# ---- Simple Undo Stack ------------------------------------------------------
-class UndoStack:
-    def __init__(self, log_cb=None):
-        self.stack = []
-        self._log = log_cb or (lambda *a, **k: None)
-
-    def push(self, action: dict):
-        """
-        action examples:
-          {"type": "delete_ref",   "label": str, "path": str}
-          {"type": "delete_label", "label": str, "paths": [str, ...], "threshold": float|None, "folder": str|None}
-        """
-        self.stack.append(action)
-
-    def pop(self):
-        if not self.stack:
-            self._log("ℹ️ Nothing to undo.")
-            return None
-        return self.stack.pop()
-
-    def clear(self):
-        self.stack.clear()
-
 # ---- Reference Browser (top strip) ---------------------------
-
 class ReferenceBrowser(ttk.Frame):
     """
     Shows reference thumbnails for the currently selected label.
     - Click a thumbnail to select/unselect (highlight).
-    - Delete Selected removes only selected reference entries.
-    - Delete Label removes all entries for the chosen label.
+    - Delete Selected removes only selected reference entries (with Undo support via trash).
+    - Delete Label removes all entries for the chosen label (with Undo support via trash).
     """
-    def __init__(self, master, gui_log, rebuild_embeddings_async, push_undo, *args, **kwargs):
+    def __init__(self, master, gui_log, rebuild_embeddings_async, undo_push=None, *args, **kwargs):
         super().__init__(master, *args, **kwargs)
         self.gui_log = gui_log
         self.rebuild_embeddings_async = rebuild_embeddings_async
-        self.push_undo = push_undo
-        
+        self.undo_push = undo_push  # callback provided by ImageRangerGUI.undo.push
+
         self.label_filter = tk.StringVar()
         self.selected_paths = set()
         self.thumb_widgets = {}
 
+        # --- UI: scrollable horizontal strip of thumbs ---
         self.canvas = tk.Canvas(self, height=130)
         self.scroll_x = ttk.Scrollbar(self, orient='horizontal', command=self.canvas.xview)
         self.inner_frame = ttk.Frame(self.canvas)
@@ -375,22 +434,23 @@ class ReferenceBrowser(ttk.Frame):
         self.inner_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.bind_all("<Shift-MouseWheel>", self._on_mousewheel)
 
+        # --- controls ---
         controls = ttk.Frame(self)
         controls.pack(fill=tk.X, pady=5)
 
-        self.label_menu = ttk.Combobox(controls, textvariable=self.label_filter, values=_labels_from_entries(),  state="readonly")
-        
-        ttk.Button(controls, text="🧭 Open Folder", command=self.open_label_folder).pack(side=tk.LEFT, padx=6)
-        ttk.Button(controls, text="🎚️ Threshold…", command=self.edit_threshold).pack(side=tk.LEFT, padx=6)
-       
+        self.label_menu = ttk.Combobox(controls, textvariable=self.label_filter,
+                                       values=_labels_from_entries(), state="readonly")
         self.label_menu.pack(side=tk.LEFT)
         self.label_menu.bind("<<ComboboxSelected>>", lambda e: self.load_images())
 
         ttk.Button(controls, text="🔄 Reload", command=self.load_images).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(controls, text="🧭 Open Folder", command=self.open_label_folder).pack(side=tk.LEFT, padx=6)
+        ttk.Button(controls, text="🎚️ Threshold…", command=self.edit_threshold).pack(side=tk.LEFT, padx=6)
         ttk.Button(controls, text="❌ Delete Selected", command=self.delete_selected_refs).pack(side=tk.LEFT, padx=6)
         ttk.Button(controls, text="🗑️ Delete Label", command=self.delete_label_all).pack(side=tk.LEFT, padx=6)
         ttk.Button(controls, text="✏️ Rename Label", command=self.rename_label).pack(side=tk.LEFT, padx=6)
 
+    # ---------------- internals ----------------
     def _on_mousewheel(self, event):
         self.canvas.xview_scroll(-1 * int(event.delta / 120), "units")
 
@@ -411,6 +471,16 @@ class ReferenceBrowser(ttk.Frame):
             if f:
                 f.configure(style="TFrame")
         self.selected_paths.clear()
+
+    # ---------------- data/UI refresh ----------------
+    def refresh_label_list(self, auto_select=True):
+        labels = _labels_from_entries()
+        self.label_menu.configure(values=labels)
+        if auto_select:
+            current = self.label_filter.get()
+            if not current and labels:
+                self.label_filter.set(labels[0])
+                self.load_images()
 
     def load_images(self):
         for w in self.inner_frame.winfo_children():
@@ -454,6 +524,7 @@ class ReferenceBrowser(ttk.Frame):
         if shown == 0:
             self.gui_log(f"⚠️ No existing references found for label '{label}'")
 
+    # ---------------- destructive actions with Undo ----------------
     def delete_selected_refs(self):
         label = self.label_filter.get()
         if not label:
@@ -470,23 +541,48 @@ class ReferenceBrowser(ttk.Frame):
         if not confirm:
             return
 
-        deleted = 0
         entries = get_all_references()
         targets = set(self.selected_paths)
+
+        deleted = 0
+        undo_items = []  # each: {"trashed": path}
+
         for (_id, lbl, path) in entries:
             if lbl == label and path in targets:
-                # Remove file if it exists (we now copy into ReferenceRoot/<label>)
                 try:
+                    # 1) move file to trash for safe undo
+                    restore_hint = None
+                    if os.path.isfile(path):
+                        ok, detail = _trash_move_file(path)   # ← pass only the file path
+                        if ok and detail not in (None, "recycle"):
+                            restore_hint = detail  # path inside .trash fallback; can be used for undo
+
+                    # 2) remove DB entry
                     delete_reference(path)
                     deleted += 1
-                    # push to Undo (now using self.app)
-                    self.push_undo({"type": "delete_ref", "label": label, "path": path})
+
+                    # record undo info if we have a concrete backup path
+                    if restore_hint:
+                        undo_items.append({"backup_path": restore_hint, "original_path": path})
+                        
                 except Exception as e:
                     self.gui_log(f"⚠️ Could not delete '{path}': {e}")
-                    
+
+        # metadata refresh (optional)
+        try:
+            _write_or_refresh_metadata(label)
+        except Exception:
+            pass
+
+        # push undo
+        if self.undo_push and undo_items:
+            self.undo_push({
+                "type": "delete_refs",
+                "data": {"label": label, "items": undo_items}
+            })
+
         self.gui_log(f"🗑️ Deleted {deleted} reference(s) from '{label}'. Rebuilding embeddings…")
         self.load_images()
-        # use the injected callback, not self.master
         self.rebuild_embeddings_async(only_label=label)
 
     def delete_label_all(self):
@@ -494,32 +590,29 @@ class ReferenceBrowser(ttk.Frame):
         if not label:
             messagebox.showwarning("No Label", "Select a label to delete.")
             return
-            
-        if not messagebox.askyesno("Delete Label", f"Delete ALL references for label '{label}'?"):
+
+        confirm = messagebox.askyesno(
+            "Delete Label",
+            f"Delete ALL references for label '{label}'?"
+        )
+        if not confirm:
             return
-    
-        # Gather everything BEFORE we delete (for Undo)
+
+        # move entire label folder to trash so we can undo
+        trashed_folder = None
         try:
-            entries = get_all_references()
+            label_dir = get_label_folder_path(label)     # ← resolve the actual folder
+            ok, detail = _trash_move_label_folder(label_dir)
+            if ok:
+                trashed_folder = detail  # "recycle" or backup path in .trash
+            else:
+                self.gui_log(f"⚠️ Could not move label folder to trash: {detail}")
         except Exception as e:
-            messagebox.showerror("Delete Label", f"Failed to read DB: {e}")
-            return
-    
-        paths_for_label = [path for (_id, lbl, path) in entries if lbl == label]
-    
-        # capture metadata for Undo
-        try:
-            threshold = get_threshold_for_label(label)
-        except Exception:
-            threshold = None
-    
-        try:
-            # we want the intended folder path (even if missing)
-            folder = get_label_folder_path(label)
-        except Exception:
-            folder = None
-    
-        # Delete references
+            self.gui_log(f"⚠️ Could not move label folder to trash: {e}")
+
+
+        # delete DB rows for that label
+        entries = get_all_references()
         deleted = 0
         for (_id, lbl, path) in entries:
             if lbl == label:
@@ -527,47 +620,35 @@ class ReferenceBrowser(ttk.Frame):
                     delete_reference(path)
                     deleted += 1
                 except Exception as e:
-                    self.gui_log(f"⚠️ Could not delete reference '{path}': {e}")
-    
-        # Remove on-disk folder
+                    self.gui_log(f"⚠️ Could not drop DB row {path}: {e}")
+
+        # stash threshold then remove label metadata
+        thr = None
         try:
-            if folder and os.path.isdir(folder):
-                shutil.rmtree(folder)
-        except Exception as e:
-            self.gui_log(f"⚠️ Could not remove folder for '{label}': {e}")
-    
-        # Remove label metadata
+            thr = get_threshold_for_label(label)
+        except Exception:
+            pass
         try:
             delete_label(label)
         except Exception:
             pass
-    
-        # Push a single UNDO action for the whole label
-        try:
-            self.push_undo({
+
+        # push undo payload
+        if self.undo_push:
+            self.undo_push({
                 "type": "delete_label",
-                "label": label,
-                "paths": paths_for_label,
-                "threshold": threshold,
-                "folder": folder
+                "data": {"label": label, "trashed_folder": trashed_folder, "threshold": thr if thr is not None else 0.3}
             })
-        except Exception:
-            pass
-    
-        # UI refresh
+
         self.gui_log(f"🗑️ Deleted label '{label}' ({deleted} item(s)). Rebuilding embeddings…")
-        try:
-            self.label_menu.configure(values=get_all_labels())
-        except Exception:
-            self.label_menu.configure(values=_labels_from_entries())
-    
+
+        self.label_menu.configure(values=get_all_labels())
+        self.refresh_label_list(auto_select=False)
         self.label_filter.set("")
         self.load_images()
-    
-        # PARTIAL rebuild for just this label (flush it from memory)
-       
         self.rebuild_embeddings_async(only_label=label)
 
+    # ---------------- rename ----------------
     def rename_label(self):
         current = self.label_filter.get()
         if not current:
@@ -579,7 +660,6 @@ class ReferenceBrowser(ttk.Frame):
         entries = get_all_references()
         moved = 0
 
-        # Move files on disk from old folder to new folder (if they are inside the reference root)
         old_folder = get_label_folder_path(current)
         new_folder = get_label_folder_path(new_label)
         os.makedirs(new_folder, exist_ok=True)
@@ -588,7 +668,7 @@ class ReferenceBrowser(ttk.Frame):
             if lbl == current:
                 new_path = path
                 try:
-                    # If file lives inside old_folder, move it to new_folder (preserve filename; handle collisions)
+                    # move file if it lives inside the old folder
                     if os.path.commonpath([os.path.abspath(path), os.path.abspath(old_folder)]) == os.path.abspath(old_folder):
                         base = os.path.basename(path)
                         name, ext = os.path.splitext(base)
@@ -603,46 +683,28 @@ class ReferenceBrowser(ttk.Frame):
                         shutil.move(path, candidate)
                         new_path = candidate
                 except Exception:
-                    # If move fails, keep original path in DB
                     pass
-
-                # Reinsert with new label + new_path (if changed)
                 insert_reference(new_path, new_label)
                 moved += 1
 
-        # Update threshold & metadata
         thr = get_threshold_for_label(current)
         set_threshold_for_label(new_label, thr)
         insert_or_update_label(new_label, new_folder, thr)
 
-        # Clean up old folder if empty
         try:
             if os.path.isdir(old_folder) and not os.listdir(old_folder):
                 shutil.rmtree(old_folder)
         except Exception:
             pass
 
-        # Refresh UI
         self.label_filter.set(new_label)
         self.refresh_label_list(auto_select=False)
         self.load_images()
         self.gui_log(f"✏️ Renamed/moved {moved} items to '{new_label}'. Rebuilding embeddings…")
-        self.rebuild_embeddings_async()
-
-        # Rewrite metadata files
+        self.rebuild_embeddings_async(only_label=new_label)
         _write_or_refresh_metadata(new_label, thr)
-        
-    def refresh_label_list(self, auto_select=True):
-        labels = _labels_from_entries()
-        self.label_menu.configure(values=labels)
-        if auto_select:
-            # If nothing selected, pick the first label (if any) to avoid "no label selected".
-            current = self.label_filter.get()
-            if not current and labels:
-                self.label_filter.set(labels[0])
-                # Immediately load images for that label
-                self.load_images()
 
+    # ---------------- helpers ----------------
     def open_label_folder(self):
         label = self.label_filter.get()
         if not label:
@@ -668,7 +730,6 @@ class ReferenceBrowser(ttk.Frame):
             current = get_threshold_for_label(label)
         except Exception:
             current = 0.3
-        # small inline prompt using a single dialog row
         val = simpledialog.askstring("Threshold", f"Threshold for '{label}' (0.0–1.0):", initialvalue=f"{current:.3f}")
         if val is None:
             return
@@ -679,10 +740,10 @@ class ReferenceBrowser(ttk.Frame):
             set_threshold_for_label(label, thr)
             _write_or_refresh_metadata(label, thr)
             self.gui_log(f"🎚️ Threshold for '{label}' set to {thr:.3f}.")
-            # optional: rebuild embeddings right away
-            self.rebuild_embeddings_async()
+            self.rebuild_embeddings_async(only_label=label)
         except Exception:
             messagebox.showerror("Invalid", "Threshold must be a number between 0.0 and 1.0.")
+
 
 # ---- Match Review Panel (post-sorting) ----------------------------
 
@@ -1066,172 +1127,223 @@ class CreateLabelDialog(tk.Toplevel):
         self.result = None
         self.destroy()
 
-# ---- Main GUI -----------------------------------------------------
-
+# ---- Main IGUI -----------------------------------------------------
 class ImageRangerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Photo Sorter - Reference Labeling")
+	
+        self._is_closing = False
+        self._workers = []          # if you spawn threads, append them here
+        self._cancel_event = threading.Event()  # use this to ask workers to stop
 
+        # handle window close (X)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        # styles + sorting state
         self.style = ttk.Style()
-        
         self.sorting = False
         self.sort_thread = None
-        self.sort_stop_event = None  # threading.Event when running
+        self.sort_stop_event = None
 
+        # button styles (ttk not used for sort button anymore, but keep for future)
         self.style.configure("SortGreen.TButton", foreground="white", background="#22aa22")
         self.style.map("SortGreen.TButton", background=[("active", "#1c8f1c")])
-
         self.style.configure("SortRed.TButton", foreground="white", background="#cc3333")
         self.style.map("SortRed.TButton", background=[("active", "#a62828")])
 
+        # menu + logger
         self._build_menu()
-
         self.log = BottomLogFrame(self.root)
         self.log.pack(side=tk.BOTTOM, fill=tk.X)
         self.gui_log = make_gui_logger(self.log)
 
-        # Undo + debounce state
-        self.undo = UndoStack(self.gui_log)
-        self.root.bind_all("<Control-z>", lambda e: self.undo_last())
-        
-        self._rebuild_pending = None
-        self._rebuild_running = False
-        self._rebuild_next_label = None
-
+        # data state
         self.selected_folder = tk.StringVar()
         self.image_paths = []
         self.thumbnails = []
         self.selected_images = set()
-
         self.multi_face_mode = tk.StringVar(value=SETTINGS["default_mode"])
-
         self.last_unmatched_dir = None
-        self.last_output_dir = None        
+        self.last_output_dir = None
 
+        # async/undo helpers
+        self._rebuild_pending = None
+        self.undo = UndoStack()
+
+        # visuals
         self.apply_styles()
         self.build_layout()
-        
-        # After building layout:
         self.reference_browser.refresh_label_list(auto_select=True)
 
         self.gui_log("✅ GUI initialized.")
-        self._rebuild_pending = None
-        self._rebuild_running = False
-        self._rebuild_next_label = None
-        
-        self.undo = UndoStack(self.gui_log)        # <-- create it here
-        self.root.bind_all("<Control-z>", lambda e: self.undo_last())  # optional hotkey
+        self.undo_stack = []
 
 
-    def rebuild_embeddings_async(self, only_label: str | None = None):
-        """Debounce and rebuild embeddings (optionally only for one label)."""
-        # cancel any pending call
-        if getattr(self, "_rebuild_pending", None):
+    def _build_menu(self):
+        menubar = tk.Menu(self.root)
+        settings_menu = tk.Menu(menubar, tearoff=0)
+        settings_menu.add_command(label="Preferences…", command=self.open_settings_dialog)
+        menubar.add_cascade(label="Settings", menu=settings_menu)
+
+        tools = tk.Menu(menubar, tearoff=0)
+        tools.add_command(label="Rebuild Embeddings", command=self.rebuild_embeddings_async)
+        tools.add_command(label="Open Reference Root", command=self.open_reference_root)
+        tools.add_separator()
+        tools.add_command(label="Export Match Audit (CSV)…", command=self.export_match_audit_csv)
+        menubar.add_cascade(label="Tools", menu=tools)
+
+        self.root.config(menu=menubar)
+
+# -----------------------------------------
+    def on_close(self):
+        if self._is_closing:
+            return
+        self._is_closing = True
+    
+        # 1) UI: prevent new actions
+        try:
+            self.set_status_left("Shutting down…")
+        except Exception:
+            pass
+    
+        # 2) Signal background tasks to stop
+        try:
+            if hasattr(self, "_cancel_event") and self._cancel_event:
+                self._cancel_event.set()
+        except Exception:
+            pass
+    
+        # 3) Join worker threads (if you use them)
+        try:
+            for t in getattr(self, "_workers", []):
+                if t and t.is_alive():
+                    t.join(timeout=3.0)
+        except Exception:
+            pass
+    
+        # 4) Save pending UI/DB state (best-effort)
+        try:
+            # if you persist window geometry or user prefs:
+            # self.save_ui_prefs()
+            # if your DB module exposes a close/flush:
+            from reference_db import close_db  # optional; implement no-op if missing
             try:
-                self.root.after_cancel(self._rebuild_pending)
+                close_db()
             except Exception:
                 pass
-            self._rebuild_pending = None
+        except Exception:
+            pass
     
-        # slight debounce to coalesce multiple rapid calls
-        self._rebuild_pending = self.root.after(
-            200, lambda ol=only_label: self._rebuild_do(ol)
-        )
-    
-    def _rebuild_do(self, only_label: str | None):
-        """Worker launcher for (partial) rebuild."""
-        self._rebuild_pending = None  # clear pending flag now
-    
-        def _work():
-            model_dir = os.path.join(os.path.dirname(__file__), "buffalo_l")
+        # 5) Release ML resources (InsightFace / ONNX sessions, etc.)
+        try:
+            from photo_sorter import release_resources  # your existing helper
             try:
-                if only_label and _build_label_embeddings:
-                    self.gui_log(f"⚙️ Rebuilding embeddings for '{only_label}'…")
-                    _build_label_embeddings(
-                        db_path=DB_PATH,
-                        model_dir=model_dir,
-                        label=only_label,
-                        log_callback=self.gui_log
-                    )
-                else:
-                    self.gui_log("⚙️ Rebuilding reference embeddings…")
-                    build_reference_embeddings_from_db(
-                        DB_PATH, model_dir, self.gui_log
-                    )
-                self.gui_log("✅ Embeddings rebuilt.")
-            except Exception as e:
-                self.gui_log(f"❌ Embedding rebuild failed: {e}")
+                release_resources()
+            except Exception:
+                pass
+        except Exception:
+            # photo_sorter or release_resources might not be available in this process
+            pass
     
-        threading.Thread(target=_work, daemon=True).start()
-        
-# ---------------background thumbnail loader-------------------
+        # 6) Clear image caches to free memory
+        try:
+            if hasattr(self, "_thumb_cache"):
+                self._thumb_cache.clear()
+        except Exception:
+            pass
+    
+        # 7) Final GC (best-effort)
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
+    
+        # 8) Destroy window
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+    
+        # 9) Exit process (optional but ensures clean teardown on Windows)
+        try:
+            import sys
+            sys.exit(0)
+        except SystemExit:
+            pass
+        except Exception:
+            pass
+
+# -----------------------------------------
+
+    def apply_styles(self):
+        if not hasattr(self, "style"):
+            self.style = ttk.Style()
+        # main-grid style
+        self.style.configure(
+            "Selected.TFrame",
+            background=SETTINGS["main_grid_sel_color"],
+            borderwidth=int(SETTINGS["main_grid_sel_border"]),
+            relief="solid",
+        )
+        # ref-grid style
+        self.style.configure(
+            "RefSelected.TFrame",
+            background=SETTINGS["ref_grid_sel_color"],
+            borderwidth=int(SETTINGS["ref_grid_sel_border"]),
+            relief="solid",
+        )
+
+    # ---------------- background thumbnail loader ----------------
     def _cancel_thumb_job(self):
-        # signal any ongoing loader to stop
         self._thumb_stop = True
 
     def _start_thumb_job(self, paths):
-        """
-        Stream thumbnails into the grid in small bursts.
-        """
-        # cancel any existing job
         self._cancel_thumb_job()
         self._thumb_stop = False
         self._thumb_executor = getattr(self, "_thumb_executor", None) or ThreadPoolExecutor(max_workers=4)
         self._thumb_queue = queue.Queue(maxsize=256)
 
-        # producer: decode PIL thumbnails in thread pool
         def producer():
             for p in paths:
                 if self._thumb_stop:
                     break
-                # cached?
                 cached = _thumbcache_get(p)
                 if cached is not None:
                     self._thumb_queue.put(("ok", p, cached))
                     continue
-
                 try:
                     with Image.open(p) as im:
                         im = im.convert("RGB")
                         im.thumbnail(THUMBNAIL_SIZE)
-                        # send raw bytes to main thread; Tk PhotoImage must be created on UI thread
                         bio = im.tobytes()
                         size = im.size
                     self._thumb_queue.put(("raw", p, (bio, size)))
                 except Exception as e:
                     self._thumb_queue.put(("err", p, str(e)))
-            # signal done
             self._thumb_queue.put(("done", None, None))
 
         threading.Thread(target=producer, daemon=True).start()
         self._consume_thumbs_batch()
 
     def _consume_thumbs_batch(self):
-        """
-        Consume a small batch from the queue on the UI thread, then reschedule self.
-        """
-        BATCH = 24  # tune for UI smoothness
+        BATCH = 24
         consumed = 0
         while consumed < BATCH:
             try:
                 kind, path, payload = self._thumb_queue.get_nowait()
             except queue.Empty:
                 break
-
             if kind == "done":
-                # final GC nudge
                 gc.collect()
                 return
             if self._thumb_stop:
-                # drain quickly
                 continue
             if kind == "ok":
-                # already a PhotoImage in cache
                 thumb = payload
                 self._add_thumbnail_widget(path, thumb)
             elif kind == "raw":
-                # build PhotoImage here (UI thread)
                 raw, size = payload
                 try:
                     im = Image.frombytes("RGB", size, raw)
@@ -1243,23 +1355,17 @@ class ImageRangerGUI:
             else:
                 self.gui_log(f"[Thumbnail error] {path}: {payload}")
             consumed += 1
-
-        # schedule next burst
         if not self._thumb_stop:
             self.root.after(10, self._consume_thumbs_batch)
 
     def _add_thumbnail_widget(self, img_path, tkimg):
-        """Create the thumbnail cell for a single image path."""
-        idx = len(self.thumbnails)  # sequential placement
+        idx = len(self.thumbnails)
         self.thumbnails.append(tkimg)
-
         frame = ttk.Frame(self.scrollable_frame, borderwidth=2, relief="solid", style="TFrame")
         frame.grid(row=idx // 6, column=idx % 6, padx=5, pady=5)
-
         label = ttk.Label(frame, image=tkimg)
-        label.image = tkimg  # keep reference
+        label.image = tkimg
         label.pack()
-
         def toggle_selection(p=img_path, f=frame):
             if p in self.selected_images:
                 self.selected_images.remove(p)
@@ -1268,8 +1374,8 @@ class ImageRangerGUI:
                 self.selected_images.add(p)
                 f.configure(style="Selected.TFrame")
         label.bind("<Button-1>", lambda e, path=img_path, fr=frame: toggle_selection(path, fr))
-# -------------------------------------------------
 
+    # ---------------- settings ----------------
     def _on_settings_saved(self, values: dict):
         SETTINGS.update(values)
         save_settings(SETTINGS)
@@ -1281,64 +1387,69 @@ class ImageRangerGUI:
     def open_settings_dialog(self):
         SettingsDialog(self.root, SETTINGS, self._on_settings_saved)
 
-    #def rebuild_embeddings_async(self, only_label: str | None = None):
-    #    model_dir = os.path.join(os.path.dirname(__file__), "buffalo_l")
-    #    title = "Building Embeddings"
-    #    msg = "Building reference embeddings…" if not only_label else f"Rebuilding embeddings for '{only_label}'…"
-    #    progress = _ModalProgress(self.root, title=title, message=msg)
+    # ---------------- embeddings rebuild (debounced + threaded) ----------------
+    def rebuild_embeddings_async(self, only_label: str | None = None):
+        if getattr(self, "_cancel_event", None) and self._cancel_event.is_set():
+            return  # or break cleanly
 
-    #    def _runner():
-    #        try:
-    #            if only_label:
-    #                from photo_sorter import build_reference_embeddings_for_labels
-    #                build_reference_embeddings_for_labels(DB_PATH, model_dir, [only_label], self.gui_log)
-    #            else:
-    #                from photo_sorter import build_reference_embeddings_from_db
-    #                build_reference_embeddings_from_db(DB_PATH, model_dir, self.gui_log)
-    #            self.gui_log("✅ Embeddings rebuilt.")
-    #        except Exception as e:
-    #            self.gui_log(f"❌ Embedding rebuild failed: {e}")
-    #            self.root.after(0, lambda: messagebox.showerror("Embeddings", str(e)))
-    #        finally:
-    #            self.root.after(0, progress.close)
-    #
-    #    threading.Thread(target=_runner, daemon=True).start()
+        if getattr(self, "_rebuild_pending", None):
+            try:
+                self.root.after_cancel(self._rebuild_pending)
+            except Exception:
+                pass
+            self._rebuild_pending = None
+        self._rebuild_pending = self.root.after(200, lambda ol=only_label: self._rebuild_do(ol))
 
+    def _rebuild_do(self, only_label: str | None):
+        self._rebuild_pending = None
+        def _runner(label=only_label):
+            model_dir = os.path.join(os.path.dirname(__file__), "buffalo_l")
+            try:
+                if label:
+                    from photo_sorter import build_reference_embeddings_for_labels
+                    self.gui_log(f"⚙️ Rebuilding embeddings for '{label}'…")
+                    build_reference_embeddings_for_labels(DB_PATH, model_dir, [label], self.gui_log)
+                else:
+                    from photo_sorter import build_reference_embeddings_from_db
+                    self.gui_log("⚙️ Rebuilding reference embeddings…")
+                    build_reference_embeddings_from_db(DB_PATH, model_dir, self.gui_log)
+                self.gui_log("✅ Embeddings rebuilt.")
+            except Exception as e:
+                self.gui_log(f"❌ Embedding rebuild failed: {e}")
+        threading.Thread(target=_runner, daemon=True).start()
+
+    # ---------------- layout ----------------
     def build_layout(self):
         top_frame = ttk.Frame(self.root)
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
 
         ttk.Label(top_frame, text="📂 Folder:").pack(side=tk.LEFT)
         ttk.Entry(top_frame, textvariable=self.selected_folder, width=60).pack(side=tk.LEFT, padx=5)
-
         ttk.Button(top_frame, text="Browse", command=self.browse_folder).pack(side=tk.LEFT)
         ttk.Button(top_frame, text="🏷️ Label Selected", command=self.label_selected).pack(side=tk.LEFT, padx=10)
         ttk.Button(top_frame, text="➕ Add to Reference", command=self.add_selected_to_reference).pack(side=tk.LEFT, padx=6)
-
-        ttk.Button(top_frame, text="🧹 DB Health Check", command=self.db_health_check).pack(side=tk.LEFT, padx=10)
         ttk.Button(top_frame, text="↩ Undo", command=self.undo_last).pack(side=tk.LEFT, padx=6)
+        ttk.Button(top_frame, text="🧹 DB Health Check", command=self.db_health_check).pack(side=tk.LEFT, padx=10)
 
         self.btn_review = ttk.Button(top_frame, text="🧭 Review Unmatched", command=self.open_review, state="disabled")
         self.btn_review.pack(side=tk.LEFT, padx=10)
-        
+
         self.btn_sort = tk.Button(
             top_frame,
             text="▶ Sort",
-            bg="SystemButtonFace",   # default system color
+            bg="SystemButtonFace",
             fg="black",
             command=self.toggle_sort,
-            width=18,                # adjust width so text fits nicely
+            width=18,
             relief="raised"
         )
         self.btn_sort.pack(side=tk.RIGHT)
 
         mode_frame = ttk.LabelFrame(top_frame, text="Face Matching Mode")
         mode_frame.pack(side=tk.RIGHT, padx=10)
-
         ttk.Radiobutton(mode_frame, text="Best Match",  variable=self.multi_face_mode, value="best").pack(anchor=tk.W)
         ttk.Radiobutton(mode_frame, text="Multi-Match", variable=self.multi_face_mode, value="multi").pack(anchor=tk.W)
         ttk.Radiobutton(mode_frame, text="Manual",      variable=self.multi_face_mode, value="manual").pack(anchor=tk.W)
-
         rules = (
             "Rules:\n"
             "• Best: MOVE file to the single best label.\n"
@@ -1348,12 +1459,8 @@ class ImageRangerGUI:
         tk.Label(mode_frame, text=rules, justify="left", anchor="w", fg="#444", wraplength=320).pack(anchor=tk.W, pady=(6, 2))
 
         self.reference_browser = ReferenceBrowser(
-            self.root,
-            self.gui_log,
-            self.rebuild_embeddings_async,  # pass method
-            self.undo.push,                 # pass Undo push function
+            self.root, self.gui_log, self.rebuild_embeddings_async, undo_push=self.undo.push
         )
-
         self.reference_browser.pack(fill=tk.X, padx=10, pady=5)
 
         self.main_frame = ttk.Frame(self.root)
@@ -1367,115 +1474,165 @@ class ImageRangerGUI:
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         _bind_vertical_mousewheel(self.canvas)
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-# ---------------- Implement undo_last ---------------------
-    def undo_last(self):
-        action = self.undo.pop()
-        if not action:
-            return
-    
-        t = action.get("type")
-    
-        if t == "delete_ref":
-            lbl = action.get("label")
-            pth = action.get("path")
-            try:
-                insert_reference(pth, lbl)
-                self.reference_browser.refresh_label_list(auto_select=False)
-                if self.reference_browser.label_filter.get() == lbl:
-                    self.reference_browser.load_images()
-                self.rebuild_embeddings_async(only_label=lbl)
-                self.gui_log(f"↩ Restored reference to '{lbl}': {pth}")
-            except Exception as e:
-                self.gui_log(f"Undo failed (delete_ref): {e}")
-    
-        elif t == "delete_label":
-            lbl       = action.get("label")
-            paths     = action.get("paths", [])
-            threshold = action.get("threshold", 0.3)
-            folder    = action.get("folder")
-    
-            try:
-                # ensure folder exists (prefer previously stored folder, else default under Reference Root)
-                if not folder or not isinstance(folder, str) or not folder.strip():
-                    folder = os.path.join(get_reference_root(), lbl)
-                try:
-                    os.makedirs(folder, exist_ok=True)
-                except Exception:
-                    pass
-                # restore label metadata (folder + threshold)
-                try:
-                    insert_or_update_label(lbl, folder, threshold)
-                except Exception:
-                    pass
-                # restore all references
-                restored = 0
-                for p in paths:
-                    try:
-                        insert_reference(p, lbl)
-                        restored += 1
-                    except Exception:
-                        pass
-                # UI refresh
-                self.reference_browser.refresh_label_list(auto_select=False)
-                self.reference_browser.label_filter.set(lbl)
-                self.reference_browser.load_images()
 
-                # partial rebuild for restored label
-                self.rebuild_embeddings_async(only_label=lbl)
-
-                self.gui_log(f"↩ Restored label '{lbl}' with {restored} reference(s).")
-            except Exception as e:
-                self.gui_log(f"Undo failed (delete_label): {e}")
-    
-        else:
-            self.gui_log(f"ℹ️ Unknown undo type: {t}")
-
-# ---------------------------------------------------    
+    # ---------------- modal confirm ----------------
     def _confirm_modal(self, title: str, message: str) -> bool:
-        """Blocking, truly modal Yes/No dialog centered over the main window."""
         dlg = tk.Toplevel(self.root)
         dlg.title(title)
         dlg.resizable(False, False)
-        dlg.transient(self.root)     # stay on top of parent
-        dlg.grab_set()               # modal grab: block all other windows
-
-        # --- content ---
+        dlg.transient(self.root)
+        dlg.grab_set()
         frm = ttk.Frame(dlg, padding=12)
         frm.pack(fill=tk.BOTH, expand=True)
-
         ttk.Label(frm, text=message, wraplength=380, justify="left").grid(row=0, column=0, columnspan=2, pady=(0, 10))
-
         result = {"ok": False}
-
         def on_yes():
             result["ok"] = True
             dlg.destroy()
-
         def on_no():
             result["ok"] = False
             dlg.destroy()
-
         ttk.Button(frm, text="Cancel", command=on_no).grid(row=1, column=0, sticky="e", padx=(0, 6))
         ttk.Button(frm, text="Stop", command=on_yes).grid(row=1, column=1, sticky="w")
-
-        # keyboard shortcuts
         dlg.bind("<Return>", lambda e: on_yes())
         dlg.bind("<Escape>", lambda e: on_no())
-
-        # center over parent
         dlg.update_idletasks()
-        x = self.root.winfo_rootx()
-        y = self.root.winfo_rooty()
-        w = self.root.winfo_width()
-        h = self.root.winfo_height()
-        ww = dlg.winfo_reqwidth()
-        wh = dlg.winfo_reqheight()
+        x = self.root.winfo_rootx(); y = self.root.winfo_rooty()
+        w = self.root.winfo_width(); h = self.root.winfo_height()
+        ww = dlg.winfo_reqwidth(); wh = dlg.winfo_reqheight()
         dlg.geometry(f"+{x + (w//2 - ww//2)}+{y + (h//2 - wh//2)}")
-
-        self.root.wait_window(dlg)   # block until closed
+        self.root.wait_window(dlg)
         return result["ok"]
+    
+    # --------------- inside class ImageRangerGUI ----------------
 
+    def undo_last(self, event=None):
+        """Undo the last destructive action (delete_refs / delete_label) or callables."""
+        try:
+            # Prefer the structured stack
+            item = None
+            if isinstance(getattr(self, "undo", None), UndoStack):
+                item = self.undo.pop()
+            elif getattr(self, "undo_stack", None):
+                item = self.undo_stack.pop()
+
+            if not item:
+                self.gui_log("Nothing to undo.")
+                return
+
+            # 1) Direct callable support
+            if callable(item):
+                item()
+                return
+
+            # 2) Dict payloads
+            if isinstance(item, dict):
+                t = item.get("type")
+                data = item.get("data", {})
+
+                # ---- Undo: Delete Selected References ----
+                if t == "delete_refs":
+                    label = data.get("label")
+                    entries = data.get("items", [])
+                    restored = 0
+                    for e in entries:
+                        # accept both legacy {"trashed": "..."} and new {"backup_path": "...", "original_path": "..."}
+                        backup = e.get("backup_path") or e.get("trashed")
+                        orig = e.get("original_path")
+                        if not backup or not orig:
+                            continue
+                        try:
+                            os.makedirs(os.path.dirname(orig), exist_ok=True)
+                            if os.path.exists(backup):
+                                shutil.move(backup, orig)
+                                if label:
+                                    try:
+                                        insert_reference(orig, label)
+                                    except Exception:
+                                        pass
+                                restored += 1
+                        except Exception as ex:
+                            self.gui_log(f"Undo restore failed for {orig}: {ex}")
+
+                    if label:
+                        try:
+                            _write_or_refresh_metadata(label)
+                        except Exception:
+                            pass
+                        # Refresh the UI + rebuild just this label's embeddings
+                        self.reference_browser.refresh_label_list(auto_select=False)
+                        if self.reference_browser.label_filter.get() == label:
+                            self.reference_browser.load_images()
+                        self.rebuild_embeddings_async(only_label=label)
+
+                    self.gui_log(f"↩ Restored {restored} reference(s) to '{label}'.")
+                    return
+
+                # ---- Undo: Delete Entire Label ----
+                if t == "delete_label":
+                    label = data.get("label")
+                    trashed_folder = data.get("trashed_folder")
+                    thr = float(data.get("threshold", 0.3))
+
+                    if not label:
+                        self.gui_log("Undo failed: missing label.")
+                        return
+
+                    # If deletion went to OS recycle bin we can’t auto-restore.
+                    if not trashed_folder or trashed_folder == "recycle":
+                        self.gui_log("Cannot auto-undo: label was sent to the system Recycle Bin.")
+                        return
+
+                    dest_folder = get_label_folder_path(label)  # ensures folder exists
+                    try:
+                        # If an empty folder was recreated, remove it before restoring
+                        try:
+                            if os.path.isdir(dest_folder) and not os.listdir(dest_folder):
+                                os.rmdir(dest_folder)
+                        except Exception:
+                            pass
+
+                        os.makedirs(os.path.dirname(dest_folder), exist_ok=True)
+                        shutil.move(trashed_folder, dest_folder)
+
+                        # Reinsert entries to DB
+                        restored = 0
+                        for root_dir, _, files in os.walk(dest_folder):
+                            for f in files:
+                                if f.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".webp")):
+                                    full = os.path.join(root_dir, f)
+                                    try:
+                                        insert_reference(full, label)
+                                        restored += 1
+                                    except Exception:
+                                        pass
+
+                        # restore label metadata / threshold
+                        try:
+                            set_threshold_for_label(label, thr)
+                            insert_or_update_label(label, dest_folder, thr)
+                            _write_or_refresh_metadata(label, thr)
+                        except Exception:
+                            pass
+
+                        # UI & embeddings
+                        self.reference_browser.refresh_label_list(auto_select=False)
+                        self.reference_browser.label_filter.set(label)
+                        self.reference_browser.load_images()
+                        self.rebuild_embeddings_async(only_label=label)
+                        self.gui_log(f"↩ Restored label '{label}' ({restored} items).")
+                    except Exception as ex:
+                        self.gui_log(f"Undo restore of label failed: {ex}")
+                    return
+
+            # Fallback (not a recognized shape)
+            self.gui_log(f"Undo item format not recognized: {item!r}")
+
+        except Exception as e:
+            self.gui_log(f"Undo failed: {e}")
+
+  
+    # ---------------- health/review/browse ----------------
     def db_health_check(self):
         try:
             removed = purge_missing_references()
@@ -1501,7 +1658,6 @@ class ImageRangerGUI:
             self.gui_log(f"📂 Folder selected: {folder}")
             self._cancel_thumb_job()
             self.load_images_recursive(folder)
-
             candidate = os.path.join(folder, "_unmatched")
             if os.path.isdir(candidate):
                 self.last_unmatched_dir = candidate
@@ -1511,6 +1667,7 @@ class ImageRangerGUI:
                 except Exception:
                     pass
 
+    # ---------------- image grid ----------------
     def load_images_recursive(self, folder):
         self.image_paths = []
         exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
@@ -1522,79 +1679,37 @@ class ImageRangerGUI:
         self.display_thumbnails()
 
     def display_thumbnails(self):
-        # clear UI frame
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
-        # release references; let GC reclaim Tk photo memory
         self.thumbnails.clear()
         gc.collect()
-        # stream thumbnails instead of decoding all at once
         self._start_thumb_job(self.image_paths)
-        for idx, img_path in enumerate(self.image_paths):
-            try:
-                with Image.open(img_path) as im:
-                    im = im.convert("RGB")
-                    im.thumbnail(THUMBNAIL_SIZE)
-                    thumb = ImageTk.PhotoImage(im)
+        # (the old eager loader is left out intentionally)
 
-                frame = ttk.Frame(self.scrollable_frame, borderwidth=2, relief="solid", style="TFrame")
-                frame.grid(row=idx // 6, column=idx % 6, padx=5, pady=5)
-
-                label = ttk.Label(frame, image=thumb)
-                label.image = thumb
-                label.pack()
-
-                def toggle_selection(p=img_path, f=frame):
-                    if p in self.selected_images:
-                        self.selected_images.remove(p)
-                        f.configure(style="TFrame")
-                    else:
-                        self.selected_images.add(p)
-                        f.configure(style="Selected.TFrame")
-
-                label.bind("<Button-1>", lambda e, path=img_path, fr=frame: toggle_selection(path, fr))
-                self.thumbnails.append(thumb)
-            except Exception as e:
-                self.gui_log(f"[Thumbnail error] {img_path}: {e}")
-
+    # ---------------- label flows ----------------
     def label_selected(self):
         if not self.selected_images:
             messagebox.showwarning("No Selection", "Please select images to label.")
             return
-        # One compact dialog for name + threshold (default 0.3)
         dlg = CreateLabelDialog(self.root, initial_name="", initial_threshold=0.3)
         self.root.wait_window(dlg)
         if not dlg.result:
             return
         label, threshold = dlg.result
-# --------------------------------
         for path in self.selected_images:
-            # Copy to ReferenceRoot/<label>/…
             dst = _safe_copy_to_label_folder(path, label, keep_original_name=True)
-            # Insert the *copied* path into DB
             insert_reference(dst, label)
-
-        # threshold in DB (update/seed)
         set_threshold_for_label(label, threshold)
-
-        # Ensure label metadata row exists and points to our folder
-        default_folder = get_label_folder_path(label)  # creates folder too
+        default_folder = get_label_folder_path(label)
         os.makedirs(default_folder, exist_ok=True)
         insert_or_update_label(label, default_folder, threshold)
-
-        # Write/refresh metadata.json in the label folder
         _write_or_refresh_metadata(label, threshold)
-# -------------------------------  
         messagebox.showinfo("Saved", f"{len(self.selected_images)} images labeled as '{label}'")
         self.selected_images.clear()
         self.display_thumbnails()
-        
-        # new:
         self.reference_browser.refresh_label_list()
-        # if a specific label is current, select it again:
         self.reference_browser.label_filter.set(label)
         self.reference_browser.load_images()
-       
         self.gui_log(f"🏷️ Labeled images as '{label}' (threshold {threshold}). Rebuilding embeddings…")
         self.rebuild_embeddings_async(only_label=label)
 
@@ -1602,117 +1717,46 @@ class ImageRangerGUI:
         if not self.selected_images:
             messagebox.showwarning("No Selection", "Select photos in the main grid first.")
             return
-
         current_label = self.reference_browser.label_filter.get()
         if not current_label:
-            # Let user create a new label (with threshold). We won't use threshold here,
-            # but we seed metadata so it's consistent.
             dlg = CreateLabelDialog(self.root, initial_name="", initial_threshold=0.3)
             self.root.wait_window(dlg)
             if not dlg.result:
                 return
             current_label, thr = dlg.result
-            # Seed metadata row + folder + metadata.json
             default_folder = get_label_folder_path(current_label)
             os.makedirs(default_folder, exist_ok=True)
             set_threshold_for_label(current_label, thr)
             insert_or_update_label(current_label, default_folder, thr)
             _write_or_refresh_metadata(current_label, thr)
-      
         for p in self.selected_images:
             dst = _safe_copy_to_label_folder(p, current_label, keep_original_name=True)
             insert_reference(dst, current_label)
-            self.undo.push({"type":"add_ref","label": current_label,"path": p})
-
-        # Optional: update metadata based on existing threshold
         _write_or_refresh_metadata(current_label)
-
         self.gui_log(f"➕ Added {len(self.selected_images)} image(s) to reference label '{current_label}'. Rebuilding embeddings…")
         messagebox.showinfo("Reference", f"Added {len(self.selected_images)} image(s) to '{current_label}'.")
-
-
         self.selected_images.clear()
         self.display_thumbnails()
         self.reference_browser.refresh_label_list(auto_select=False)
         if self.reference_browser.label_filter.get() == current_label:
             self.reference_browser.load_images()
-        self.rebuild_embeddings_async(only_label=current_label)      
+        self.rebuild_embeddings_async(only_label=current_label)
 
-# ------------- old ----------------------------
-#    def run_sorting_thread(self):
-#        threading.Thread(target=self.start_sorting, daemon=True).start()
-
-#    def start_sorting(self):
-#        ref_list = get_all_references()
-#        if not ref_list:
-#            messagebox.showwarning("No References", "Please label reference images first.")
-#            return
-
-#        model_dir = os.path.join(os.path.dirname(__file__), "buffalo_l")
-
-#       def log_callback(msg):
-#            self.gui_log(msg)
-
-#        self.gui_log("⚙️ Building reference embeddings…")
-#        build_reference_embeddings_from_db(DB_PATH, model_dir, log_callback)
-
-#        inbox = filedialog.askdirectory(title="Select Inbox Folder to Sort")
-#        if not inbox:
-#            return
-#        output = filedialog.askdirectory(title="Select Output Folder for Sorted Photos")
-#        if not output:
-#            return
-
-#        unmatched = os.path.join(output, "_unmatched")
-#        match_mode = self.multi_face_mode.get()
-
-#        self.gui_log(f"🚀 Sorting started → mode: {match_mode}")
-#        sort_photos_with_embeddings_from_folder_using_db(
-#            inbox_dir=inbox,
-#            output_dir=output,
-#            unmatched_dir=unmatched,
-#            db_path=DB_PATH,
-#            log_callback=log_callback,
-#            match_mode=match_mode,
-#            move_files=True,
-#            keep_original_filenames=True
-#        )
-#        self.gui_log("✅ Sorting complete.")
-
-#        self.last_unmatched_dir = unmatched
-#        self.last_output_dir = output
-#        try:
-#            self.btn_review.configure(state="normal")
-#        except Exception:
-#            pass
-
-#        if messagebox.askyesno("Review", "Open review panel for unmatched images now?"):
-#            self.open_review()
-#        else:
-#            self.gui_log("ℹ️ You can review later via '🧭 Review Unmatched'.")
-
-# -----------------NEW ----------------------
+    # ---------------- sorting flow ----------------
     def start_sort_flow(self):
-        # Make sure we have references
         ref_list = get_all_references()
         if not ref_list:
             messagebox.showwarning("No References", "Please label reference images first.")
             return
-
         model_dir = os.path.join(os.path.dirname(__file__), "buffalo_l")
-
         def log_callback(msg):
             self.gui_log(msg)
-
-        # Rebuild embeddings before sorting
         self.gui_log("⚙️ Building reference embeddings…")
         try:
             build_reference_embeddings_from_db(DB_PATH, model_dir, log_callback)
         except Exception as e:
             messagebox.showerror("Embeddings", f"Failed to build embeddings: {e}")
             return
-
-        # Rebuild embeddings before sorting (modal progress)
         progress = _ModalProgress(self.root, title="Building Embeddings", message="Preparing reference embeddings…")
         ok_holder = {"ok": True, "err": None}
         def _prebuild():
@@ -1729,22 +1773,16 @@ class ImageRangerGUI:
         if not ok_holder["ok"]:
             messagebox.showerror("Embeddings", f"Failed to build embeddings: {ok_holder['err']}")
             return
-
-        # Ask for folders
         inbox = filedialog.askdirectory(title="Select Inbox Folder to Sort")
         if not inbox:
             return
         output = filedialog.askdirectory(title="Select Output Folder for Sorted Photos")
         if not output:
             return
-
         unmatched = os.path.join(output, "_unmatched")
         match_mode = self.multi_face_mode.get()
-
-        # Prepare stop event + thread
         self.sort_stop_event = threading.Event()
         self._set_sort_running()
-
         def worker():
             try:
                 self.gui_log(f"🚀 Sorting started → mode: {match_mode}")
@@ -1758,13 +1796,12 @@ class ImageRangerGUI:
                     move_files=True,
                     keep_original_filenames=True,
                     stop_event=self.sort_stop_event,
-                    model_dir=model_dir,   # pass through
+                    model_dir=model_dir,
                 )
                 if self.sort_stop_event.is_set():
                     self.gui_log("⛔ Sorting stopped by user.")
                 else:
                     self.gui_log("✅ Sorting complete.")
-                # remember paths for review
                 self.last_unmatched_dir = unmatched
                 self.last_output_dir = output
                 try:
@@ -1774,13 +1811,11 @@ class ImageRangerGUI:
             except Exception as e:
                 self.gui_log(f"❌ Sorting error: {e}")
             finally:
-                # back to idle
                 self.root.after(0, self._set_sort_idle)
-
         self.sort_thread = threading.Thread(target=worker, daemon=True)
         self.sort_thread.start()
- 
-# -------------------------------------------
+
+    # ---------------- open/export ----------------
     def open_reference_root(self):
         folder = get_reference_root()
         try:
@@ -1817,40 +1852,22 @@ class ImageRangerGUI:
         except Exception as e:
             messagebox.showerror("Export", f"Failed to export: {e}")
 
+    # ---------------- sort button states ----------------
     def _set_sort_idle(self):
         self.sorting = False
-        self.btn_sort.configure(
-            text="▶ Sort",
-            bg="SystemButtonFace",
-            fg="black",
-            relief="raised"
-        )
+        self.btn_sort.configure(text="▶ Sort", bg="SystemButtonFace", fg="black", relief="raised")
 
     def _set_sort_running(self):
         self.sorting = True
-        self.btn_sort.configure(
-            text="🟢 Sorting… (click to stop)",
-            bg="#22aa22",   # green background
-            fg="white",     # white text
-            relief="sunken"
-        )
+        self.btn_sort.configure(text="🟢 Sorting… (click to stop)", bg="#22aa22", fg="white", relief="sunken")
 
     def _set_sort_stopping(self):
-        self.btn_sort.configure(
-            text="🛑 Stop (stopping…)",
-            bg="#cc3333",   # red background
-            fg="white",
-            relief="sunken"
-        )
+        self.btn_sort.configure(text="🛑 Stop (stopping…)", bg="#cc3333", fg="white", relief="sunken")
 
     def toggle_sort(self):
         if not self.sorting:
-            # start
             self.start_sort_flow()
         else:
-            # ask to stop
-#            if messagebox.askyesno("Stop Sorting", "Are you sure you want to stop sorting?"):
-            # NEW (truly modal, blocks interaction):
             if self._confirm_modal("Stop Sorting", "Are you sure you want to stop sorting?"):
                 if self.sort_stop_event:
                     self.sort_stop_event.set()
