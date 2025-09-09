@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import queue
 import itertools
 import gc
+from types import SimpleNamespace
 
 from PIL import Image, ImageTk
 
@@ -1187,8 +1188,28 @@ class ImageRangerGUI:
         # visuals
         self.apply_styles()
         self.build_layout()
-        self.reference_browser.refresh_label_list(auto_select=True)
+        # self.reference_browser.refresh_label_list(auto_select=True)
+        # refresh label list for the new reference strip UI
+        labels = self.get_all_label_names()
+        try:
+            self.ref_label_menu.configure(values=labels)
+        except Exception:
+            pass
+        if labels:
+            self.active_label.set(labels[0])
+            self.render_reference_strip(labels[0])
+
+        
         self.set_zoom_target("main")   # initial active grid highlights
+
+        # Legacy compatibility shim (now UI elements exist)
+        self.reference_browser = SimpleNamespace(
+            refresh_label_list=lambda auto_select=False: self._rb_refresh_label_list(auto_select),
+            delete_label_all=lambda label: self.delete_label_all(label),
+        )
+
+        # Now it's safe to refresh the label list (Combobox is built)
+        self._rb_refresh_label_list(auto_select=True)
 
         self.gui_log("✅ GUI initialized.")
         self.undo_stack = []
@@ -1209,7 +1230,48 @@ class ImageRangerGUI:
 
         self.root.config(menu=menubar)
 
-# -----------------------------------------
+    # -----------------------------------------
+    def _rb_refresh_label_list(self, auto_select: bool = False):
+        labels = []
+        try:
+            labels = self.get_all_label_names()
+        except Exception:
+            pass
+        try:
+            self.ref_label_menu.configure(values=labels)
+        except Exception:
+            pass
+        if auto_select and labels:
+            self.active_label.set(labels[0])
+            self.render_reference_strip(labels[0])
+    
+    def delete_label_all(self, label: str):
+        if not label:
+            return
+        try:
+            from reference_db import get_all_references, delete_reference, set_threshold_for_label
+            refs = [r["path"] for r in get_all_references() if r["label"] == label]
+            for p in refs:
+                try:
+                    delete_reference(p)
+                except Exception:
+                    pass
+            try:
+                set_threshold_for_label(label, None)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        # refresh UI
+        try:
+            labels = self.get_all_label_names()
+            self.ref_label_menu.configure(values=labels)
+        except Exception:
+            pass
+        if self.active_label.get() == label:
+            self.active_label.set("")
+            self.render_reference_strip("")
+
     def on_close(self):
         if getattr(self, "_is_closing", False): return
         self._is_closing = True
@@ -1245,7 +1307,6 @@ class ImageRangerGUI:
         except Exception: pass
 
 # -----------------------------------------
-
     def apply_styles(self):
         if not hasattr(self, "style"):
             self.style = ttk.Style()
@@ -1710,7 +1771,7 @@ class ImageRangerGUI:
         if not label: return
         try:
             # use your existing label delete function
-            self.reference_browser.delete_label_all(label)
+            self.delete_label_all(label)  # new helper below
         except Exception:
             pass
         self.active_label.set("")
@@ -1733,6 +1794,28 @@ class ImageRangerGUI:
     def action_sort_menu(self): pass
     def action_flag_selected(self): pass
     def action_settings(self): pass
+
+    #------------------------------------------------
+    def delete_label_all(self, label: str):
+        if not label:
+            return
+        try:
+            # remove all references of this label from DB
+            from reference_db import get_all_references, delete_reference
+            refs = [r["path"] for r in get_all_references() if r["label"] == label]
+            for p in refs:
+                try:
+                   delete_reference(p)
+                except Exception:
+                   pass
+            # optional: clear threshold if your DB supports it
+            try:
+                from reference_db import set_threshold_for_label
+                set_threshold_for_label(label, None)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
     # ---------------- modal confirm ----------------
