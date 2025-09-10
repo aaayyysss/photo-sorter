@@ -1288,7 +1288,7 @@ class ImageRangerGUI:
             self.ref_label_menu.configure(values=labels)
         except Exception:
             pass
-        if self.active_label.get() == label:
+        if self.reference_browser.label_filter.get() == label:
             self.active_label.set("")
             self.render_reference_strip("")
 
@@ -1438,38 +1438,34 @@ class ImageRangerGUI:
         SettingsDialog(self.root, SETTINGS, self._on_settings_saved)
 
     # ---------------- embeddings rebuild (debounced + threaded) ----------------
+    def rebuild_embeddings_async(self, only_label: str | None = None):
+        if getattr(self, "_rebuild_pending", None):
+            try:
+                self.root.after_cancel(self._rebuild_pending)
+            except Exception:
+                pass
+            self._rebuild_pending = None
+        self._rebuild_pending = self.root.after(200, lambda ol=only_label: self._rebuild_do(ol))
 
-    #def rebuild_embeddings_async(self, only_label=None):
-    #    """Threaded rebuild + spinner + button disable."""
-    #    if getattr(self, "_cancel_event", None) and self._cancel_event.is_set():
-    #        return
-    #
-    #    self.begin_busy("Rebuilding embeddings…")
-    
-    #    def _job():
-    #        err = None
-    #        try:
-    #            from photo_sorter import build_reference_embeddings_from_db
-    #            build_reference_embeddings_from_db(only_label=only_label)
-    #        except Exception as e:
-    #            err = e
-    #        # back to UI thread
-    #        def _done():
-    #            if err:
-    #                self.end_busy(f"Rebuild failed: {err}")
-    #            else:
-    #                self.end_busy("✅ Embeddings rebuilt.")
-    #        try:
-    #            self.root.after(0, _done)
-    #        except Exception:
-    #            pass
-    #
-    #    t = threading.Thread(target=_job, daemon=True)
-    #    t.start()
-    #    try:
-    #        self._workers.append(t)
-    #    except Exception:
-    #        pass
+    def _rebuild_do(self, only_label: str | None):
+        self._rebuild_pending = None
+        def _runner(label=only_label):
+            model_dir = os.path.join(os.path.dirname(__file__), "buffalo_l")
+            try:
+                if label:
+                    from photo_sorter import build_reference_embeddings_for_labels
+                    self.gui_log(f"⚙️ Rebuilding embeddings for '{label}'…")
+                    build_reference_embeddings_for_labels(DB_PATH, model_dir, [label], self.gui_log)
+                else:
+                    from photo_sorter import build_reference_embeddings_from_db
+                    self.gui_log("⚙️ Rebuilding reference embeddings…")
+                    build_reference_embeddings_from_db(DB_PATH, model_dir, self.gui_log)
+                self.gui_log("✅ Embeddings rebuilt.")
+            except Exception as e:
+                self.gui_log(f"❌ Embedding rebuild failed: {e}")
+        threading.Thread(target=_runner, daemon=True).start()
+
+
 
 # ------------------------Debounce multiple rebuild requests into one."--------------------------
     # ---- Debounce state (keep if you already have it) ----
@@ -1505,7 +1501,7 @@ class ImageRangerGUI:
                 # detect if function accepts 'only_label'
                 sig = None
                 try:
-                    sig = inspect.signature(build_reference_embeddings_from_db)
+                    sig = inspect.signature(build_reference_embeddings_from_db(DB_PATH, MODEL_DIR, log_callback))
                 except Exception:
                     sig = None
     
@@ -1633,7 +1629,7 @@ class ImageRangerGUI:
     
         # Sidebar + Reference strip contents
         self.build_sidebar_contents()
-        self.build_reference_strip()
+#        self.build_reference_strip()
     
         # ====== Main grid (scrollable) ======
         self.canvas = tk.Canvas(self.grid_container, bg="#171717", highlightthickness=0)
@@ -1651,9 +1647,7 @@ class ImageRangerGUI:
         # Make grids activate the shared zoom slider
         self.canvas.bind("<Button-1>", lambda e: self.set_zoom_target("main"))
         self.inner.bind("<Button-1>",  lambda e: self.set_zoom_target("main"))
-        self.ref_canvas.bind("<Button-1>", lambda e: self.set_zoom_target("ref"))
-        self.ref_inner.bind("<Button-1>",  lambda e: self.set_zoom_target("ref"))
-
+       
     # ----------------- Sidebar scaffolding -----------
     def build_sidebar_contents(self): 
         tabs = tk.Frame(self.sidebar, bg="#1f1f1f"); tabs.pack(fill=tk.X, pady=(8,4))
@@ -1680,52 +1674,21 @@ class ImageRangerGUI:
         # controls
         bar = tk.Frame(self.ref_frame, bg="#141414"); bar.pack(side=tk.TOP, fill=tk.X)
         tk.Label(bar, text="Label:", bg="#141414", fg="#ddd").pack(side=tk.LEFT, padx=(8,4))
-    
-        self.active_label = tk.StringVar(value="")
-        self.ref_label_menu = ttk.Combobox(
-            bar,
-            textvariable=self.active_label,
-            values=self.get_all_label_names(),
-            width=18,
-            state="normal"   # ← allow typing a new label name
-        )
+
         self.ref_label_menu.bind("<Return>", lambda e: self.create_label_from_text())
 
         self.ref_label_menu.pack(side=tk.LEFT, padx=(0,6))
         self.ref_label_menu.bind("<<ComboboxSelected>>", lambda e: self.on_change_active_label())
         
-        # + New Label button
-        btn_new_label = ttk.Button(bar, text="+", width=3, command=self.create_label_from_selection)
-        btn_new_label.pack(side=tk.LEFT, padx=(0,8))
-        
-        # (optional) remember to disable it during busy mode
-        if not hasattr(self, "_buttons_to_disable"):
-            self._buttons_to_disable = []
-        self._buttons_to_disable.append(btn_new_label)
-    
-        tk.Label(bar, text="Threshold", bg="#141414", fg="#aaa").pack(side=tk.LEFT, padx=(8,4))
-        self.ref_thr = tk.DoubleVar(value=0.30)
-        ttk.Scale(bar, from_=0.05, to=0.90, orient=tk.HORIZONTAL, variable=self.ref_thr,
-                  command=lambda v: self.on_change_threshold(float(v)), length=160).pack(side=tk.LEFT, padx=(0,10))
-        self.lbl_thr_val = tk.Label(bar, text="0.30", bg="#141414", fg="#aaa"); self.lbl_thr_val.pack(side=tk.LEFT)
-    
-        # ---- Buttons (assign to variables!) ----
-        btns = tk.Frame(bar, bg="#141414"); btns.pack(side=tk.RIGHT, padx=8)
-        btn_add     = ttk.Button(btns, text="Add from Selection", command=self.add_selected_to_label)
-        btn_remove  = ttk.Button(btns, text="Remove Selected",    command=self.remove_selected_refs)
-        btn_rebuild = ttk.Button(btns, text="Rebuild",            command=lambda: self.schedule_rebuild_embeddings(only_label=self.active_label.get()))
-        btn_delete  = ttk.Button(btns, text="Delete Label",       command=self.delete_active_label)
-    
-        btn_add.pack(side=tk.LEFT, padx=4)
-        btn_remove.pack(side=tk.LEFT, padx=4)
-        btn_rebuild.pack(side=tk.LEFT, padx=4)
-        btn_delete.pack(side=tk.LEFT, padx=4)
-    
-        # make sure the disable-list exists, then register buttons for busy-mode
-        if not hasattr(self, "_buttons_to_disable"):
-            self._buttons_to_disable = []
-        self._buttons_to_disable.extend([btn_add, btn_remove, btn_rebuild, btn_delete])
-    
+        self.reference_browser = ReferenceBrowser(
+            self.ref_frame,
+            gui_log=self.gui_log,
+            rebuild_embeddings_async=self.rebuild_embeddings_async,
+            undo_push=self.undo.push if hasattr(self, "undo") else None
+        )
+        self.reference_browser.pack(fill=tk.BOTH, expand=True)
+
+      
         # filmstrip (horizontal scroll)
         strip = tk.Frame(self.ref_frame, bg="#141414"); strip.pack(fill=tk.BOTH, expand=True)
         self.ref_canvas = tk.Canvas(strip, bg="#141414", height=110, highlightthickness=0)
@@ -1748,19 +1711,11 @@ class ImageRangerGUI:
             pass
 
     # -----------------------------------------------
-    def create_label_from_text(self):
-        label = self._sanitize_label(self.active_label.get())
-        if not label:
-            return
-        self._ensure_label_registered(label)
-        self._refresh_label_list_and_select(label)
-        self.render_reference_strip(label)
-        self.set_status_left(f"Label '{label}' ready. Select photos and click 'Add from Selection'.")
-
+   
     #------------------------------------------------
     def render_reference_strip(self, label=None):
         for w in self.ref_inner.winfo_children(): w.destroy()
-        label = label or self.active_label.get()
+        label = label or self.reference_browser.label_filter.get()
         if not label: return
     
         try:
@@ -1868,7 +1823,7 @@ class ImageRangerGUI:
         offer to add them immediately as references.
         """
         from tkinter import simpledialog, messagebox
-        current = self.active_label.get().strip()
+        current = self.reference_browser.label_filter.get().strip()
         prompt_default = current if current else ""
         name = simpledialog.askstring("New label", "Enter label name:", initialvalue=prompt_default)
         if not name:
@@ -1952,7 +1907,7 @@ class ImageRangerGUI:
             return []
     
     def on_change_active_label(self):
-        label = self.active_label.get()
+        label = self.reference_browser.label_filter.get()
         try:
             from reference_db import get_threshold_for_label
             t = get_threshold_for_label(label) or 0.30
@@ -1961,15 +1916,6 @@ class ImageRangerGUI:
             pass
         self.render_reference_strip(label)
     
-    def on_change_threshold(self, v):
-        self.lbl_thr_val.config(text=f"{float(v):.2f}")
-        label = self.active_label.get()
-        if not label: return
-        try:
-            from reference_db import set_threshold_for_label
-            set_threshold_for_label(label, float(v))
-        except Exception:
-            pass
     # --------------Main grid (zoomable + multi-select)--------------------------------
     def on_canvas_resize(self, event):
         self.render_grid()
@@ -2129,61 +2075,7 @@ class ImageRangerGUI:
                 self.render_reference_strip()
 
     # ----------------Reference actions (hook to your DB + rebuild)---------------
-    def add_selected_to_label(self):
-        label = self.active_label.get().strip()
-        if not label:
-            self.set_status_left("Choose a label first.")
-            return
-        if not self.selected_indices:
-            self.set_status_left("Select images in the main grid first.")
-            return
     
-        to_add = [self.current_images[i] for i in sorted(self.selected_indices) if 0 <= i < len(self.current_images)]
-        try:
-            from reference_db import insert_reference
-            added = 0
-            for p in to_add:
-                try:
-                    insert_reference(p, label)
-                    added += 1
-                except Exception:
-                    pass
-    
-            self.set_status_left(f"Added {added} reference(s) to '{label}'. Rebuilding embeddings…")
-            self.schedule_rebuild_embeddings(only_label=label)
-            self.render_reference_strip(label)
-        except Exception as e:
-            self.set_status_left(f"Add failed: {e}")
-
-    
-    def remove_selected_refs(self):
-        label = self.active_label.get().strip()
-        if not label:
-            self.set_status_left("Choose a label.")
-            return
-    
-        to_remove = [path for frame, path in getattr(self, "_ref_thumbs", [])
-                     if frame.cget("highlightbackground") == "#69a7ff"]
-        if not to_remove:
-            self.set_status_left("Select references in the strip to remove.")
-            return
-    
-        try:
-            from reference_db import delete_reference
-            rem = 0
-            for p in to_remove:
-                try:
-                    delete_reference(p)
-                    rem += 1
-                except Exception:
-                    pass
-    
-            self.set_status_left(f"Removed {rem} from '{label}'. Rebuilding embeddings…")
-            self.schedule_rebuild_embeddings(only_label=label)
-            self.render_reference_strip(label)
-        except Exception as e:
-            self.set_status_left(f"Remove failed: {e}")
-
 
     # -----------------------------------------------
     def set_status_left(self, msg):
@@ -2201,21 +2093,7 @@ class ImageRangerGUI:
 
     #------------------------------------------------
 
-    def delete_active_label(self):
-        label = self.active_label.get().strip()
-        if not label:
-            self.set_status_left("No active label.")
-            return
-        self.delete_label_all(label)
-        # refresh UI
-        self.active_label.set("")
-        try:
-            self.ref_label_menu.configure(values=self.get_all_label_names())
-        except Exception:
-            pass
-        self.render_reference_strip("")
-        self.set_status_left(f"Deleted label '{label}'.")
-
+    
     def delete_label_all(self, label: str):
         if not label:
             return
@@ -2239,7 +2117,6 @@ class ImageRangerGUI:
 
     # ----------------------------------------------
 
-    
     
     # ---------------- modal confirm ----------------
     def _confirm_modal(self, title: str, message: str) -> bool:
