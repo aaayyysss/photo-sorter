@@ -45,7 +45,8 @@ from reference_db import (
     get_threshold_for_label,
     get_all_labels,      # keep if you want; we won’t rely on it for the dropdown
     delete_label,
-    insert_or_update_label,   # ⬅️ add this
+    insert_or_update_label,
+    _trash_move_label_folder   # ⬅️ add this
 )
 
 from ReferenceGUI import ReferenceBrowser
@@ -139,25 +140,6 @@ def _trash_move_file(file_path: str) -> tuple[bool, str | None]:
         trash_root = _module_trash_root()
         dest = _unique_path(trash_root, p.name)
         shutil.move(str(p), str(dest))
-        return True, str(dest)
-    except Exception as e:
-        return False, f"error: {e!s}"
-
-
-def _trash_move_label_folder(label_dir: str) -> tuple[bool, str | None]:
-    """
-    Delete an entire label folder. Same behavior as files.
-    """
-    d = Path(label_dir)
-    if not d.exists():
-        return False, "not-found"
-    try:
-        if send2trash is not None:
-            send2trash(str(d))
-            return True, "recycle"
-        trash_root = _module_trash_root()
-        dest = _unique_path(trash_root, d.name)
-        shutil.move(str(d), str(dest))
         return True, str(dest)
     except Exception as e:
         return False, f"error: {e!s}"
@@ -765,25 +747,25 @@ class ImageRangerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Photo Sorter - Reference Labeling")
-
+    
         # styles + sorting state
         self.style = ttk.Style()
         self.sorting = False
         self.sort_thread = None
         self.sort_stop_event = None
-
-        # button styles (ttk not used for sort button anymore, but keep for future)
+    
+        # button styles
         self.style.configure("SortGreen.TButton", foreground="white", background="#22aa22")
         self.style.map("SortGreen.TButton", background=[("active", "#1c8f1c")])
         self.style.configure("SortRed.TButton", foreground="white", background="#cc3333")
         self.style.map("SortRed.TButton", background=[("active", "#a62828")])
-
+    
         # menu + logger
         self._build_menu()
         self.log = BottomLogFrame(self.root)
         self.log.pack(side=tk.BOTTOM, fill=tk.X)
         self.gui_log = make_gui_logger(self.log)
-
+    
         # data state
         self.selected_folder = tk.StringVar()
         self.image_paths = []
@@ -792,18 +774,22 @@ class ImageRangerGUI:
         self.multi_face_mode = tk.StringVar(value=SETTINGS["default_mode"])
         self.last_unmatched_dir = None
         self.last_output_dir = None
-
+    
         # async/undo helpers
         self._rebuild_pending = None
         self.undo_stack = UndoStack()
-
+    
         # visuals
         self.apply_styles()
+    
+        # build UI layout (reference_browser defined here)
         self.build_layout()
+    
+        # ✅ refresh after it's defined
         self.reference_browser.refresh_label_list(auto_select=True)
-
+    
+        # log success
         self.gui_log("✅ GUI initialized.")
-        #self.undo_stack = []
 
 
     def _build_menu(self):
@@ -961,40 +947,38 @@ class ImageRangerGUI:
 
     # ---------------- layout ----------------
     def build_layout(self):
-        # --- Top Control Bar ---
+        # === Top Bar ===
         top_frame = ttk.Frame(self.root)
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
     
-        # 📂 Folder Picker
+        # --- Folder Selection ---
         ttk.Label(top_frame, text="📂 Folder:").pack(side=tk.LEFT)
         ttk.Entry(top_frame, textvariable=self.selected_folder, width=60).pack(side=tk.LEFT, padx=5)
         ttk.Button(top_frame, text="Browse", command=self.browse_folder).pack(side=tk.LEFT)
     
-        # 🏷️ Label & ➕ Add to Reference
+        # --- Labeling Actions ---
         ttk.Button(top_frame, text="🏷️ Label Selected", command=self.label_selected).pack(side=tk.LEFT, padx=10)
         ttk.Button(top_frame, text="➕ Add to Reference", command=self.add_selected_to_reference).pack(side=tk.LEFT, padx=6)
-    
-        # ↩ Undo Button
         ttk.Button(top_frame, text="↩ Undo", command=self.undo_last_action).pack(side=tk.LEFT, padx=6)
     
-        # 🧹 Health Check
+        # --- Tools ---
         ttk.Button(top_frame, text="🧹 DB Health Check", command=self.db_health_check).pack(side=tk.LEFT, padx=10)
     
-        # 🧭 Review Unmatched (initially disabled)
+        # --- Review Button (starts disabled) ---
         self.btn_review = ttk.Button(top_frame, text="🧭 Review Unmatched", command=self.open_review, state="disabled")
         self.btn_review.pack(side=tk.LEFT, padx=10)
     
-        # ▶ Sort Button (fixed size and color-coded)
+        # --- Sort Button (manual ttk -> tk for color control) ---
         self.btn_sort = tk.Button(
             top_frame,
             text="▶ Sort",
-            bg="SystemButtonFace",  # could be changed on active
+            bg="SystemButtonFace",
             fg="black",
             command=self.toggle_sort,
             width=18,
             relief="raised"
         )
-        self.btn_sort.pack(side=tk.RIGHT, padx=5)
+        self.btn_sort.pack(side=tk.RIGHT, padx=10)
     
         # --- Face Matching Mode ---
         mode_frame = ttk.LabelFrame(top_frame, text="Face Matching Mode")
@@ -1003,24 +987,25 @@ class ImageRangerGUI:
         ttk.Radiobutton(mode_frame, text="Multi-Match", variable=self.multi_face_mode, value="multi").pack(anchor=tk.W)
         ttk.Radiobutton(mode_frame, text="Manual",      variable=self.multi_face_mode, value="manual").pack(anchor=tk.W)
     
+        # --- Matching Rules Description ---
         rules = (
             "Rules:\n"
             "• Best: MOVE file to the single best label.\n"
-            "• Multi: COPY to all other matched labels.\n"
+            "• Multi: COPY to all matched labels.\n"
             "• Manual: placeholder for now."
         )
         tk.Label(mode_frame, text=rules, justify="left", anchor="w", fg="#444", wraplength=320).pack(anchor=tk.W, pady=(6, 2))
     
-        # --- Reference Browser (Label Strip + Label Menu) ---
+        # === Reference Browser Component ===
         self.reference_browser = ReferenceBrowser(
-            parent=self.root,
-            log_fn=self.gui_log,
-            rebuild_embeddings_fn=self.rebuild_embeddings_async,
-            undo_push=self.undo.push  # ✅ Enables undo from subcomponents
+            master=self.root,
+            gui_log=self.gui_log,
+            rebuild_embeddings_async=self.rebuild_embeddings_async,
+            undo_push=self.undo_stack.push,  # ✅ Corrected here
         )
         self.reference_browser.pack(fill=tk.X, padx=10, pady=5)
     
-        # --- Scrollable Photo Grid (Main Display) ---
+        # === Main Image Grid Scroll Area ===
         self.main_frame = ttk.Frame(self.root)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
     
@@ -1028,20 +1013,14 @@ class ImageRangerGUI:
         self.scrollbar = ttk.Scrollbar(self.main_frame, orient=tk.VERTICAL, command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
     
-        # A Frame inside the canvas for scrollable content
         self.scrollable_frame = ttk.Frame(self.canvas)
         self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor='nw')
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        )
+        self.scrollable_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
     
-        # Pack canvas and scrollbar
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-    
-        # Enable mousewheel scrolling
         _bind_vertical_mousewheel(self.canvas)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
 
     # ---------------- modal confirm ----------------
     def _confirm_modal(self, title: str, message: str) -> bool:
