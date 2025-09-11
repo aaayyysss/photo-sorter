@@ -543,6 +543,7 @@ class ReferenceBrowser(ttk.Frame):
         self.rebuild_embeddings_async(only_label=label)
 
 
+
     def delete_label_all(self):
         label = self.label_filter.get()
         if not label:
