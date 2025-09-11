@@ -529,14 +529,20 @@ class ReferenceBrowser(ttk.Frame):
         except Exception:
             pass
     
-        if self.undo_push and undo_items:
+        if self.undo_push:
             self.undo_push({
                 "type": "delete_refs",
                 "data": {
-                    "label": label,
-                    "items": undo_items
+                    "label": current_label,
+                    "items": [
+                        {
+                            "original_path": orig,
+                            "backup_path": backup,
+                        } for orig, backup in zip(selected_paths, backup_paths)
+                    ]
                 }
             })
+
     
         self.gui_log(f"🗑️ Deleted {deleted} reference(s) from '{label}'. Rebuilding embeddings…")
         self.load_images()
@@ -594,10 +600,11 @@ class ReferenceBrowser(ttk.Frame):
                 "type": "delete_label",
                 "data": {
                     "label": label,
-                    "trashed_folder": trashed_folder,
-                    "threshold": thr if thr is not None else 0.3
+                    "trashed_folder": moved_folder,  # path to `.trash/...`
+                    "threshold": threshold,
                 }
             })
+
     
         self.gui_log(f"🗑️ Deleted label '{label}' ({deleted} item(s)). Rebuilding embeddings…")
     
@@ -665,12 +672,13 @@ class ReferenceBrowser(ttk.Frame):
             self.undo_push({
                 "type": "rename_label",
                 "data": {
-                    "old_label": current,
+                    "old_label": old_label,
                     "new_label": new_label,
-                    "threshold": thr,
-                    "moved_files": moved_files
+                    "threshold": old_threshold,
+                    "moved_files": list(zip(new_paths, old_paths))
                 }
             })
+
     
         self.label_filter.set(new_label)
         self.refresh_label_list(auto_select=False)
