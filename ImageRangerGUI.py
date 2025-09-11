@@ -961,38 +961,48 @@ class ImageRangerGUI:
 
     # ---------------- layout ----------------
     def build_layout(self):
+        # --- Top Control Bar ---
         top_frame = ttk.Frame(self.root)
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
-
+    
+        # 📂 Folder Picker
         ttk.Label(top_frame, text="📂 Folder:").pack(side=tk.LEFT)
         ttk.Entry(top_frame, textvariable=self.selected_folder, width=60).pack(side=tk.LEFT, padx=5)
         ttk.Button(top_frame, text="Browse", command=self.browse_folder).pack(side=tk.LEFT)
+    
+        # 🏷️ Label & ➕ Add to Reference
         ttk.Button(top_frame, text="🏷️ Label Selected", command=self.label_selected).pack(side=tk.LEFT, padx=10)
         ttk.Button(top_frame, text="➕ Add to Reference", command=self.add_selected_to_reference).pack(side=tk.LEFT, padx=6)
-        
+    
+        # ↩ Undo Button
         ttk.Button(top_frame, text="↩ Undo", command=self.undo_last_action).pack(side=tk.LEFT, padx=6)
-        
+    
+        # 🧹 Health Check
         ttk.Button(top_frame, text="🧹 DB Health Check", command=self.db_health_check).pack(side=tk.LEFT, padx=10)
-
+    
+        # 🧭 Review Unmatched (initially disabled)
         self.btn_review = ttk.Button(top_frame, text="🧭 Review Unmatched", command=self.open_review, state="disabled")
         self.btn_review.pack(side=tk.LEFT, padx=10)
-
+    
+        # ▶ Sort Button (fixed size and color-coded)
         self.btn_sort = tk.Button(
             top_frame,
             text="▶ Sort",
-            bg="SystemButtonFace",
+            bg="SystemButtonFace",  # could be changed on active
             fg="black",
             command=self.toggle_sort,
             width=18,
             relief="raised"
         )
-        self.btn_sort.pack(side=tk.RIGHT)
-
+        self.btn_sort.pack(side=tk.RIGHT, padx=5)
+    
+        # --- Face Matching Mode ---
         mode_frame = ttk.LabelFrame(top_frame, text="Face Matching Mode")
         mode_frame.pack(side=tk.RIGHT, padx=10)
         ttk.Radiobutton(mode_frame, text="Best Match",  variable=self.multi_face_mode, value="best").pack(anchor=tk.W)
         ttk.Radiobutton(mode_frame, text="Multi-Match", variable=self.multi_face_mode, value="multi").pack(anchor=tk.W)
         ttk.Radiobutton(mode_frame, text="Manual",      variable=self.multi_face_mode, value="manual").pack(anchor=tk.W)
+    
         rules = (
             "Rules:\n"
             "• Best: MOVE file to the single best label.\n"
@@ -1000,26 +1010,38 @@ class ImageRangerGUI:
             "• Manual: placeholder for now."
         )
         tk.Label(mode_frame, text=rules, justify="left", anchor="w", fg="#444", wraplength=320).pack(anchor=tk.W, pady=(6, 2))
-
+    
+        # --- Reference Browser (Label Strip + Label Menu) ---
         self.reference_browser = ReferenceBrowser(
-            self.root, 
-            self.gui_log, 
-            self.rebuild_embeddings_async, 
-            undo_push=self.undo_stack.push
+            parent=self.root,
+            log_fn=self.gui_log,
+            rebuild_embeddings_fn=self.rebuild_embeddings_async,
+            undo_push=self.undo.push  # ✅ Enables undo from subcomponents
         )
         self.reference_browser.pack(fill=tk.X, padx=10, pady=5)
-
+    
+        # --- Scrollable Photo Grid (Main Display) ---
         self.main_frame = ttk.Frame(self.root)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
+    
         self.canvas = tk.Canvas(self.main_frame, bg="#ffffff")
         self.scrollbar = ttk.Scrollbar(self.main_frame, orient=tk.VERTICAL, command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
+    
+        # A Frame inside the canvas for scrollable content
         self.scrollable_frame = ttk.Frame(self.canvas)
         self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor='nw')
-        self.scrollable_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+    
+        # Pack canvas and scrollbar
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        _bind_vertical_mousewheel(self.canvas)
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    
+        # Enable mousewheel scrolling
+        _bind_vertical_mousewheel(self.canvas)
 
     # ---------------- modal confirm ----------------
     def _confirm_modal(self, title: str, message: str) -> bool:
@@ -1177,10 +1199,7 @@ class ImageRangerGUI:
     #    except Exception as e:
     #        self.gui_log(f"Undo failed: {e}")
 
-
-    
-
-    
+  
   
     # ---------------- health/review/browse ----------------
     def db_health_check(self):
@@ -1201,7 +1220,24 @@ class ImageRangerGUI:
             return
         MatchReviewPanel(self.root, self.last_unmatched_dir, self.last_output_dir, self.gui_log)
 
-    def browse_folder(self):def undo_last_action(self, event=None):
+    def browse_folder(self):
+        folder = filedialog.askdirectory()
+        if folder:
+            self.selected_folder.set(folder)
+            self.gui_log(f"📂 Folder selected: {folder}")
+            self._cancel_thumb_job()
+            self.load_images_recursive(folder)
+            candidate = os.path.join(folder, "_unmatched")
+            if os.path.isdir(candidate):
+                self.last_unmatched_dir = candidate
+                self.last_output_dir = folder
+                try:
+                    self.btn_review.configure(state="normal")
+                except Exception:
+                    pass
+
+        
+    def undo_last_action(self, event=None):
         """Undo the last destructive action (delete_refs / delete_label / rename_label) or callables."""
         try:
             item = self.undo_stack.pop() if self.undo_stack.can_undo() else None
