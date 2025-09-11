@@ -1178,8 +1178,31 @@ class ImageRangerGUI:
     #        self.gui_log(f"Undo failed: {e}")
 
 
-    def undo_last_action(self, event=None):
-        """Undo the last destructive action (delete_refs / delete_label) or callables."""
+    
+
+    
+  
+    # ---------------- health/review/browse ----------------
+    def db_health_check(self):
+        try:
+            removed = purge_missing_references()
+            self.gui_log(f"🧹 DB Health Check: removed {removed} dead reference entries.")
+            messagebox.showinfo("DB Health Check", f"Removed {removed} dead reference entries.")
+            self.reference_browser.refresh_label_list(auto_select=False)
+            if removed:
+                self.rebuild_embeddings_async()
+        except Exception as e:
+            self.gui_log(f"⚠️ DB Health Check failed: {e}")
+            messagebox.showerror("DB Health Check", f"Failed: {e}")
+
+    def open_review(self):
+        if not (self.last_unmatched_dir and os.path.isdir(self.last_unmatched_dir)):
+            messagebox.showinfo("Review", "No unmatched folder to review yet.")
+            return
+        MatchReviewPanel(self.root, self.last_unmatched_dir, self.last_output_dir, self.gui_log)
+
+    def browse_folder(self):def undo_last_action(self, event=None):
+        """Undo the last destructive action (delete_refs / delete_label / rename_label) or callables."""
         try:
             item = self.undo_stack.pop() if self.undo_stack.can_undo() else None
             if not item:
@@ -1233,7 +1256,7 @@ class ImageRangerGUI:
                     return
     
                 # ---- Undo: Delete Entire Label ----
-                if t == "delete_label":
+                elif t == "delete_label":
                     label = data.get("label")
                     trashed_folder = data.get("trashed_folder")
                     thr = float(data.get("threshold", 0.3))
@@ -1284,33 +1307,48 @@ class ImageRangerGUI:
                         self.gui_log(f"Undo restore of label failed: {ex}")
                     return
     
+                # ---- Undo: Rename Label ----
+                elif t == "rename_label":
+                    old = data.get("old_label")
+                    new = data.get("new_label")
+                    files = data.get("moved_files", [])
+                    thr = data.get("threshold", 0.3)
+    
+                    restored = 0
+                    for new_path, old_path in files:
+                        try:
+                            os.makedirs(os.path.dirname(old_path), exist_ok=True)
+                            shutil.move(new_path, old_path)
+                            insert_reference(old_path, old)
+                            restored += 1
+                        except Exception:
+                            pass
+    
+                    try:
+                        set_threshold_for_label(old, thr)
+                        insert_or_update_label(old, get_label_folder_path(old), thr)
+                        _write_or_refresh_metadata(old, thr)
+                    except Exception:
+                        pass
+    
+                    try:
+                        delete_label(new)
+                    except Exception:
+                        pass
+    
+                    self.reference_browser.refresh_label_list(auto_select=False)
+                    self.reference_browser.label_filter.set(old)
+                    self.reference_browser.load_images()
+                    self.rebuild_embeddings_async(only_label=old)
+                    self.gui_log(f"↩ Undid label rename: restored '{old}' ({restored} items).")
+                    return
+    
+            # If none of the above handled the item
             self.gui_log(f"Undo item format not recognized: {item!r}")
     
         except Exception as e:
             self.gui_log(f"Undo failed: {e}")
 
-    
-  
-    # ---------------- health/review/browse ----------------
-    def db_health_check(self):
-        try:
-            removed = purge_missing_references()
-            self.gui_log(f"🧹 DB Health Check: removed {removed} dead reference entries.")
-            messagebox.showinfo("DB Health Check", f"Removed {removed} dead reference entries.")
-            self.reference_browser.refresh_label_list(auto_select=False)
-            if removed:
-                self.rebuild_embeddings_async()
-        except Exception as e:
-            self.gui_log(f"⚠️ DB Health Check failed: {e}")
-            messagebox.showerror("DB Health Check", f"Failed: {e}")
-
-    def open_review(self):
-        if not (self.last_unmatched_dir and os.path.isdir(self.last_unmatched_dir)):
-            messagebox.showinfo("Review", "No unmatched folder to review yet.")
-            return
-        MatchReviewPanel(self.root, self.last_unmatched_dir, self.last_output_dir, self.gui_log)
-
-    def browse_folder(self):
         folder = filedialog.askdirectory()
         if folder:
             self.selected_folder.set(folder)
