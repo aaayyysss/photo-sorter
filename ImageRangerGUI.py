@@ -1,5 +1,5 @@
 # ImageRanger.py
-# Verion 6.7 dated 20250911
+# Verion 6.7 dated 20250912
 # Photo Sorter - Reference Labeling (single-file, working layout)
 # Adds:
 #   • Bottom black scrollable log console (dual: GUI + stdout)
@@ -661,6 +661,9 @@ class ImageRangerGUI:
             self.reference_browser.apply_ref_selection_styles_after_settings()
         self.multi_face_mode.set(self.settings.get("default_mode"))
         self.gui_log("⚙️ Preferences applied.")
+        self.gui_log(f"📐 Main selection border: {self.settings.get('main_grid_sel_border')} px, color: {self.settings.get('main_grid_sel_color')}")
+        self.gui_log(f"📐 Ref selection border: {self.settings.get('ref_grid_sel_border')} px, color: {self.settings.get('ref_grid_sel_color')}")
+
 
 
     def _build_menu(self):
@@ -818,10 +821,28 @@ class ImageRangerGUI:
 #        label.bind("<Button-1>", toggle_selection)
 #        frame.bind("<Button-1>", toggle_selection)
 
+    def _apply_main_selection_style(self, path, selected=False):
+        """Apply border color/thickness to a main-grid thumbnail cell."""
+        if path not in self.thumb_cells:
+            return
+        border = self.thumb_cells[path]["border"]
+        if selected:
+            border.config(
+                highlightbackground=self.settings.get("main_grid_sel_color"),
+                highlightthickness=int(self.settings.get("main_grid_sel_border"))
+            )
+        else:
+            border.config(highlightthickness=0)
+
+    
     def _add_thumbnail_widget(self, img_path, tkimg):
         idx = len(self.thumbnails)
         self.thumbnails.append(tkimg)
-    
+
+        color = self.settings.get("main_grid_sel_color")
+        thickness = int(self.settings.get("main_grid_sel_border"))
+
+
         # Outer cell
         cell = tk.Frame(self.scrollable_frame, bg="white", bd=0, highlightthickness=0)
         cell.grid(row=idx // 6, column=idx % 6, padx=5, pady=5)
@@ -829,7 +850,9 @@ class ImageRangerGUI:
         # Border layer we color via highlight*
         border = tk.Frame(cell, bg="white", bd=0, highlightthickness=0, highlightbackground="white")
         border.pack(fill=tk.BOTH, expand=True)
+        border.configure(highlightbackground=color, highlightthickness=thickness)
     
+
         # Image
         label = tk.Label(border, image=tkimg, bg="white", bd=0)
         label.image = tkimg
@@ -838,18 +861,20 @@ class ImageRangerGUI:
         # Register nodes for later style updates
         self.thumb_cells[img_path] = {"cell": cell, "border": border}
     
-        def toggle(_=None, p=img_path):
+        def toggle_selection(event=None, p=img_path):
             if p in self.selected_images:
                 self.selected_images.remove(p)
-                self._apply_main_selection_style(p, selected=False)
+                border.config(highlightthickness=0)
             else:
                 self.selected_images.add(p)
-                self._apply_main_selection_style(p, selected=True)
-            self.gui_log(f"Selected: {len(self.selected_images)} image(s)")
-    
+                border.config(
+                    highlightbackground=self.settings.get("main_grid_sel_color"),
+                    highlightthickness=int(self.settings.get("main_grid_sel_border"))
+                )
+        
         # Click anywhere in the tile
         for w in (cell, border, label):
-            w.bind("<Button-1>", toggle)
+            w.bind("<Button-1>", toggle_selection)
     
         # Initial style
         self._apply_main_selection_style(img_path, selected=(img_path in self.selected_images))
@@ -940,15 +965,18 @@ class ImageRangerGUI:
     
         # === Reference Browser Component ===
         self.reference_browser = ReferenceBrowser(
-            master=self.root,
+            self.root,
             gui_log=self.gui_log,
             rebuild_embeddings_async=self.rebuild_embeddings_async,
-            undo_push=self.undo_stack.push,  # ✅ Corrected here
-            settings=self.settings,    # ← pass SettingsManager
-
+            undo_push=self.undo_stack.push  # ✅ Corrected here
+        
         )
+        # ✅ Now pass settings after creation (safe!)
+        self.reference_browser.settings = self.settings
+        
         self.reference_browser.pack(fill=tk.X, padx=10, pady=5)
-    
+        print("[DEBUG] ReferenceBrowser settings attached:", self.reference_browser.settings)    
+        
         # === Main Image Grid Scroll Area ===
         self.main_frame = ttk.Frame(self.root)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
