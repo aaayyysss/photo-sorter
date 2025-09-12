@@ -322,10 +322,11 @@ class ReferenceBrowser(ttk.Frame):
     """
     def __init__(self, master, gui_log, rebuild_embeddings_async, undo_push=None, *args, **kwargs):
         super().__init__(master, *args, **kwargs)
+        
         self.gui_log = gui_log
         self.rebuild_embeddings_async = rebuild_embeddings_async
         self.undo_push = undo_push  # callback provided by ImageRangerGUI.undo.push
-        self.settings = settings           # ← store SettingsManager
+        self.settings = None
     
         self.label_filter = tk.StringVar()
         self.selected_paths = set()
@@ -366,6 +367,10 @@ class ReferenceBrowser(ttk.Frame):
         ttk.Button(controls, text="✏️ Rename Label", command=self.rename_label).pack(side=tk.LEFT, padx=6)
 
     # ---------------- internals ----------------
+    def apply_settings(self, settings):
+        """Attach settings after construction."""
+        self.settings = settings
+    
     def _on_mousewheel(self, event):
         self.canvas.xview_scroll(-1 * int(event.delta / 120), "units")
 
