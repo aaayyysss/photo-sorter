@@ -1,5 +1,5 @@
 # ImageRanger.py
-# Verion 6.10.2 dated 20250915
+# Verion 6.10.3 dated 20250915
 # Photo Sorter - Reference Labeling (single-file, working layout)
 # Adds:
 #   • Bottom black scrollable log console (dual: GUI + stdout)
@@ -1050,24 +1050,28 @@ class ImageRangerGUI:
     
         row = idx // self.dynamic_columns
         col = idx % self.dynamic_columns
-        cell_size = self.last_applied_thumb_size
     
-        # --- Outer grid tile ---
+        tile_size = self.last_applied_thumb_size + 10  # include border space
+    
+        # Tile container with visible border or fixed light gray bg
         cell = tk.Frame(
             self.scrollable_frame,
-            bg="white",
-            width=cell_size,
-            height=cell_size
+            bg="#cccccc",  # light gray background to show tile edge
+            width=tile_size,
+            height=tile_size
         )
-        cell.grid(row=row, column=col, padx=5, pady=5)
-        cell.grid_propagate(False)
+        cell.grid(row=row, column=col, padx=self.tile_pad, pady=self.tile_pad)
+        cell.grid_propagate(False)  # prevent auto-resize
     
-        # --- Inner border frame ---
-        border = tk.Frame(cell, bg="white", bd=0, highlightthickness=thickness,
-                          highlightbackground=color)
-        border.pack(expand=True, fill=tk.BOTH, padx=4, pady=4)
+        # Inner padding frame to host the image and highlight selection
+        border = tk.Frame(
+            cell,
+            bg="white",
+            highlightthickness=thickness,
+            highlightbackground=color
+        )
+        border.pack(expand=True, fill=tk.BOTH, padx=2, pady=2)
     
-        # --- Image label centered ---
         label = tk.Label(border, image=tkimg, bg="white", bd=0)
         label.image = tkimg
         label.pack(expand=True)
