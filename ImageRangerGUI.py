@@ -914,9 +914,8 @@ class ImageRangerGUI:
         # Include grid padding between tiles
         step = tile_w + self.tile_pad
         cols = max(1, canvas_width // step)
-        if cols != self.dynamic_columns:
-            self.dynamic_columns = cols
-            self.gui_log(f"[DEBUG] Canvas: {canvas_width}, Columns: {self.dynamic_columns}")
+        self.dynamic_columns = cols
+        self.gui_log(f"[DEBUG] Canvas: {canvas_width}, Columns: {self.dynamic_columns}")
     
     def _on_canvas_resize(self, _event=None):
         """Debounced reflow on resize."""
@@ -1049,50 +1048,43 @@ class ImageRangerGUI:
         color = self.settings.get("main_grid_sel_color")
         thickness = int(self.settings.get("main_grid_sel_border"))
     
-        # ---- where to put this tile ----
-        cols = max(1, getattr(self, "dynamic_columns", 6))
-        row = idx // cols
-        col = idx % cols
+        row = idx // self.dynamic_columns
+        col = idx % self.dynamic_columns
+        cell_size = self.last_applied_thumb_size
     
-        # ---- tile sizing ----
-        tile_size = self._compute_tile_size()  # includes inner padding to keep the label centered
-    
-        # Outer cell (fixed-size tile)
+        # --- Outer grid tile ---
         cell = tk.Frame(
             self.scrollable_frame,
             bg="white",
-            width=tile_size,
-            height=tile_size
+            width=cell_size,
+            height=cell_size
         )
-        cell.grid(row=row, column=col, padx=self.tile_pad//2, pady=self.tile_pad//2)
-        cell.grid_propagate(False)  # keep fixed tile size
+        cell.grid(row=row, column=col, padx=5, pady=5)
+        cell.grid_propagate(False)
     
-        # Inner "border" frame we will highlight when selected
-        border = tk.Frame(cell, bg="white", bd=0, highlightthickness=0, highlightbackground=color)
-        border.pack(expand=True, fill=tk.BOTH, padx=4, pady=4)  # centered and padded
+        # --- Inner border frame ---
+        border = tk.Frame(cell, bg="white", bd=0, highlightthickness=thickness,
+                          highlightbackground=color)
+        border.pack(expand=True, fill=tk.BOTH, padx=4, pady=4)
     
-        # Centered image
+        # --- Image label centered ---
         label = tk.Label(border, image=tkimg, bg="white", bd=0)
         label.image = tkimg
         label.pack(expand=True)
     
-        # Register references
         self.thumb_cells[img_path] = {"cell": cell, "border": border}
     
-        # Toggle selection
         def toggle_selection(event=None, p=img_path):
             if p in self.selected_images:
                 self.selected_images.remove(p)
                 border.config(highlightthickness=0)
             else:
                 self.selected_images.add(p)
-                border.config(highlightbackground=self.settings.get("main_grid_sel_color"),
-                              highlightthickness=int(self.settings.get("main_grid_sel_border")))
+                border.config(highlightbackground=color, highlightthickness=thickness)
     
         for w in (cell, border, label):
             w.bind("<Button-1>", toggle_selection)
     
-        # Initial style based on current selection set
         self._apply_main_selection_style(img_path, selected=(img_path in self.selected_images))
 
     
@@ -1683,44 +1675,36 @@ class ImageRangerGUI:
         self.gui_log(f"🖼️ Loading {len(self.image_paths)} images into grid…")
         self.display_thumbnails()
 
-#    def display_thumbnails(self):
-#        for widget in self.scrollable_frame.winfo_children():
-#            widget.destroy()        
-#        self.thumb_cells.clear()  # ✅ prevent stale references
-#        self.thumbnails.clear()
-#        gc.collect()
-#
-#        print(f"[DEBUG] Displaying {len(self.image_paths)} thumbnails...")
-#        
-#        # 🧭 Sync zoom bar with actual setting
-#        self.zoom_slider.set(self.settings.get("thumbnail_size", (120, 120))[0])
-#
-#        self._start_thumb_job(self.image_paths)
-        
-        # (the old eager loader is left out intentionally)
-
     def display_thumbnails(self):
-        # clear existing tiles
+        if not self.image_paths:
+            return
+    
+        # Clear previous thumbnail widgets
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
-        self.thumb_cells.clear()
         self.thumbnails.clear()
+        self.thumb_cells.clear()
         gc.collect()
 
-        # keep zoom slider in sync with actual setting
-        self.zoom_slider.set(self.settings.get("thumbnail_size", (120, 120))[0])
-        self.last_applied_thumb_size = int(self.zoom_slider.get())
+        # 🧭 Sync zoom bar and size
+        zoom_size = self.settings.get("thumbnail_size", (120, 120))[0]
+        self.zoom_slider.set(zoom_size)
+        self.last_applied_thumb_size = int(zoom_size)
+        
+        # Calculate dynamic columns based on canvas width
+        canvas_width = self.canvas.winfo_width()
+        tile_size = self.last_applied_thumb_size + 10  # thumbnail + padding
+        columns = max(1, canvas_width // tile_size)
+        self.dynamic_columns = columns  # store for use in thumbnail placement
+        
+        print(f"[DEBUG] Canvas: {canvas_width}, Columns: {columns}")
+        
+        #self.last_applied_thumb_size = int(self.zoom_slider.get())
 
-        # compute how many columns we can show right now
-        self._update_dynamic_columns()
-    
         # start background building
         self._start_thumb_job(self.image_paths)
-        # 🧭 Sync zoom bar with actual setting
-        self.zoom_slider.set(self.settings.get("thumbnail_size", (120, 120))[0])
 
         self.scrollable_frame.update_idletasks()
-        self.dynamic_columns = columns  # store for use in thumbnail placement
 
 
     # ---------------- label flows ----------------
