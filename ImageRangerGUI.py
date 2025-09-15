@@ -1,5 +1,5 @@
 # ImageRanger.py
-# Verion 6.7 dated 20250912
+# Verion 6.10.2 dated 20250915
 # Photo Sorter - Reference Labeling (single-file, working layout)
 # Adds:
 #   • Bottom black scrollable log console (dual: GUI + stdout)
@@ -17,28 +17,26 @@
 #       - Main/Reference selection color & thickness
 
 
-
 import os
 import json
 import uuid
 import shutil
 import threading
 import time
-
-import tkinter as tk
-from tkinter import *
-
-import sys, subprocess
-from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import queue
 import itertools
 import gc
+import sys, subprocess
+
+import tkinter as tk
+
+from tkinter import *
+from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PIL import Image, ImageTk
-
 from undo_stack import UndoStack
-from pathlib import Path  # ✅ Add this near other imports at the top
+from pathlib import Path
 
 
 from reference_db import (
@@ -72,6 +70,34 @@ try:
     from send2trash import send2trash  # pip install Send2Trash
 except Exception:
     send2trash = None
+
+# ---------- Global thumbnail cache for main grid
+_THUMB_CACHE = {}
+_THUMB_CACHE_ORDER = []
+_THUMB_CACHE_MAX = 400
+
+# ---- Constants ----------------------------------
+
+THUMBNAIL_SIZE = (100, 100)
+DB_PATH = "reference_data.db"
+
+def _thumbcache_get(key):
+    if key in _THUMB_CACHE:
+        if key in _THUMB_CACHE_ORDER:
+            _THUMB_CACHE_ORDER.remove(key)
+        _THUMB_CACHE_ORDER.append(key)
+        return _THUMB_CACHE[key]
+    return None
+
+def _thumbcache_put(key, value):
+    _THUMB_CACHE[key] = value
+    _THUMB_CACHE_ORDER.append(key)
+    while len(_THUMB_CACHE_ORDER) > _THUMB_CACHE_MAX:
+        old = _THUMB_CACHE_ORDER.pop(0)
+        try:
+            del _THUMB_CACHE[old]
+        except Exception:
+            pass
 
 
 def _ensure_dir(p: Path) -> None:
@@ -140,41 +166,11 @@ from photo_sorter import (
     sort_photos_with_embeddings_from_folder_using_db
 )
 
-# ---- Constants ----------------------------------------------
 
-THUMBNAIL_SIZE = (100, 100)
-DB_PATH = "reference_data.db"
-
-# ---- Utilities -----------------------------------------------
+# ---- Utilities -------------------------------------
 
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
-
-
-#-----------------------------
-# --- Global thumbnail cache (LRU) ---
-_THUMB_CACHE = {}
-_THUMB_CACHE_ORDER = []
-_THUMB_CACHE_MAX = 400  # adjust to your RAM; ~400 * small images
-
-def _thumbcache_get(key):
-    if key in _THUMB_CACHE:
-        # refresh order (move to end)
-        if key in _THUMB_CACHE_ORDER:
-            _THUMB_CACHE_ORDER.remove(key)
-        _THUMB_CACHE_ORDER.append(key)
-        return _THUMB_CACHE[key]
-    return None
-
-def _thumbcache_put(key, value):
-    _THUMB_CACHE[key] = value
-    _THUMB_CACHE_ORDER.append(key)
-    while len(_THUMB_CACHE_ORDER) > _THUMB_CACHE_MAX:
-        old = _THUMB_CACHE_ORDER.pop(0)
-        try:
-            del _THUMB_CACHE[old]
-        except Exception:
-            pass
 
 #-----------------------------
 
@@ -251,8 +247,72 @@ def _write_or_refresh_metadata(label: str, threshold: float | None = None):
     except Exception:
         pass  # non-fatal
 
+# ------------------ProgressPopup-------------------------
 
-# ---- Visual Logger --------------------------------------------
+class ProgressPopup:
+    def __init__(self, master):
+        self.top = tk.Toplevel(master)
+        self.top.title("Loading…")
+        self.top.geometry("400x180")
+        
+        self.top.resizable(False, False)
+        self.top.transient(master)
+        self.top.grab_set()
+
+        # UI Components
+        self.label = tk.Label(self.top, text="Preparing to load images...")
+        self.label.pack(pady=(20, 10))
+
+        self.progress = ttk.Progressbar(self.top, orient="horizontal", length=250, mode="determinate")
+        self.progress.pack()
+
+        self.status_label = tk.Label(self.top, text="")
+        self.status_label.pack(pady=(10, 5))
+
+        self.cancel_requested = False  # ✅ used by scan_worker()
+
+        cancel_btn = ttk.Button(self.top, text="Cancel", command=self._cancel)
+        cancel_btn.pack(pady=(5, 10))
+
+        # Ensure visible and centered
+        self._center_popup()
+        self.top.update_idletasks()
+        self.top.deiconify()
+
+    def _cancel(self):
+        self.cancel_requested = True
+        self.label.config(text="Cancelling...")
+
+    def set_total(self, total):
+        self.progress["maximum"] = total
+
+    def update_progress(self, value, total=None, current_path=None):
+        self.progress["value"] = value
+        if total:
+            self.progress["maximum"] = total
+        text = f"Processing {value} of {int(self.progress['maximum'])}"
+        if current_path:
+            filename = os.path.basename(current_path)
+            text += f"\n{filename}"
+        self.status_label.config(text=text)
+
+    def close(self):
+        self.top.destroy()
+
+    def _center_popup(self):
+        self.top.update_idletasks()
+        w = self.top.winfo_width()
+        h = self.top.winfo_height()
+        parent_x = self.top.master.winfo_rootx()
+        parent_y = self.top.master.winfo_rooty()
+        parent_w = self.top.master.winfo_width()
+        parent_h = self.top.master.winfo_height()
+        x = parent_x + (parent_w // 2) - (w // 2)
+        y = parent_y + (parent_h // 2) - (h // 2)
+        self.top.geometry(f"+{x}+{y}")
+
+
+# ---- Visual Logger -------------------------------------
 
 class BottomLogFrame(tk.Frame):
     def __init__(self, parent):
@@ -281,7 +341,7 @@ def make_gui_logger(log_widget):
             log_widget.log(msg)
     return gui_log
 
-# ---- Mouse wheel helpers ---------------------------------------
+# ---- Mouse wheel helpers ----------------------------------
 
 def _bind_vertical_mousewheel(canvas: tk.Canvas):
     def _on_mousewheel(event):
@@ -315,20 +375,22 @@ def _bind_horizontal_mousewheel(canvas: tk.Canvas):
     canvas.bind("<Button-4>", _on_mousewheel)
     canvas.bind("<Button-5>", _on_mousewheel)
 
-# ---- DB init -----------------------------------------------
+# ---- DB init ----------------------------------------
 
 init_db()
 
-# ---- Match Review Panel (post-sorting) ----------------------------
+# ---- Match Review Panel (post-sorting) --------------
 
 class MatchReviewPanel(tk.Toplevel):
-    def __init__(self, master, unmatched_dir, output_dir, gui_log, *args, **kwargs):
+    def __init__(self, master, unmatched_dir, output_dir, gui_log, settings, *args, **kwargs):
         super().__init__(master, *args, **kwargs)
         self.title("Review Unmatched Photos")
         self.geometry("1100x700")
         self.unmatched_dir = unmatched_dir
         self.output_dir = output_dir
         self.gui_log = gui_log
+        self.settings = settings
+
 
         self._thumbs = []
         self._checks = []   # (var, path, label_var)
@@ -402,7 +464,9 @@ class MatchReviewPanel(tk.Toplevel):
 
         self.gui_log(f"🖼️ Review: found {len(paths)} unmatched images.")
         cols = 6
-        TH = (100, 100)
+        #TH = (100, 100)
+        TH = self.settings.get("thumbnail_size", (120, 120))
+
         for i, p in enumerate(paths):
             try:
                 with Image.open(p) as im:
@@ -472,11 +536,8 @@ class MatchReviewPanel(tk.Toplevel):
         self.gui_log(f"✅ Added {added} image(s) as references.")
         messagebox.showinfo("References", f"Added {added} reference(s).")
 
-# ---- Settings Dialog ---------------------------------------------
-
-
-        
-# ----------------Modal Progress Dialog (for long tasks)----------
+      
+# ------------Modal Progress Dialog (for long tasks)-------
 class _ModalProgress:
     def __init__(self, parent, title="Working…", message="Please wait…"):
         self.top = tk.Toplevel(parent)
@@ -586,7 +647,74 @@ class CreateLabelDialog(tk.Toplevel):
         self.result = None
         self.destroy()
 
-# ---- Main GUI -----------------------------------------------------
+# ---- LeftSideBar  ---------------------------------
+
+class LeftSidebar(ttk.Frame):
+    def __init__(self, master, on_folder_select, on_sort_change, on_filter_toggle, *args, **kwargs):
+        super().__init__(master, *args, **kwargs)
+        self.on_folder_select = on_folder_select
+        self.on_sort_change = on_sort_change
+        self.on_filter_toggle = on_filter_toggle
+
+        self._build_ui()
+
+    def _build_ui(self):
+        # === Folder Tree Viewer ===
+        folder_frame = ttk.LabelFrame(self, text="Folders")
+        folder_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(6, 3))
+
+        self.tree = ttk.Treeview(folder_frame, show="tree")
+        self.tree.pack(fill=tk.BOTH, expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+
+        abspath = Path.home()
+        root_node = self.tree.insert('', 'end', text=abspath.name, open=True, values=[str(abspath)])
+        self._populate_tree(root_node, abspath)
+
+        # === Sorting & Filter Controls ===
+        control_frame = ttk.LabelFrame(self, text="Sort & Filter")
+        control_frame.pack(fill=tk.X, padx=6, pady=(3, 6))
+
+        # Sort by
+        ttk.Label(control_frame, text="Sort by:").pack(anchor="w")
+        self.sort_var = tk.StringVar(value="name")
+        ttk.Combobox(control_frame, textvariable=self.sort_var, values=["name", "date", "size"], state="readonly", width=12).pack(fill="x", padx=2, pady=2)
+        self.sort_var.trace_add("write", lambda *_,: self.on_sort_change(self.sort_var.get()))
+
+        # Filter small images
+        self.hide_small = tk.BooleanVar(value=False)
+        ttk.Checkbutton(control_frame, text="Hide small images", variable=self.hide_small, command=self._trigger_filter).pack(anchor="w", pady=2)
+
+        # Hide hidden/system
+        self.hide_hidden = tk.BooleanVar(value=True)
+        ttk.Checkbutton(control_frame, text="Hide hidden/system", variable=self.hide_hidden, command=self._trigger_filter).pack(anchor="w", pady=2)
+
+    def _populate_tree(self, parent, path):
+        try:
+            for p in Path(path).iterdir():
+                if p.is_dir() and not p.name.startswith('.'):
+                    node = self.tree.insert(parent, 'end', text=p.name, open=False, values=[str(p)])
+                    # Add dummy child for expandable UI
+                    self.tree.insert(node, 'end')
+        except PermissionError:
+            pass
+
+    def _on_tree_select(self, event):
+        selected = self.tree.focus()
+        path = self.tree.item(selected, "values")[0]
+        if path:
+            self.on_folder_select(path)
+
+    def _trigger_filter(self):
+        filters = {
+            "hide_small": self.hide_small.get(),
+            "hide_hidden": self.hide_hidden.get()
+        }
+        self.on_filter_toggle(filters)
+
+
+# ---- Main GUI --------------------------------------
+
 class ImageRangerGUI:
     def __init__(self, root):
         self.root = root
@@ -597,7 +725,13 @@ class ImageRangerGUI:
         self.sorting = False
         self.sort_thread = None
         self.sort_stop_event = None
-    
+        
+        #self.thumb_cache = ThumbnailCache(
+        #    use_disk_cache=self.settings.get("use_disk_cache"),
+        #    cache_dir=self.settings.get("thumb_cache_dir"),
+        #    #max_memory_items=self.settings.get("thumb_cache_max_items#")
+        #)
+        
         # button styles
         self.style.configure("SortGreen.TButton", foreground="white", background="#22aa22")
         self.style.map("SortGreen.TButton", background=[("active", "#1c8f1c")])
@@ -610,7 +744,8 @@ class ImageRangerGUI:
         self.log.pack(side=tk.BOTTOM, fill=tk.X)
         self.gui_log = make_gui_logger(self.log)
 
-        self.selected_images = set()         # selected file paths in main grid
+        self.selected_images = set()         # selected file paths in main grid 
+        
         self.thumb_cells = {}                # path -> {"cell": tk.Frame, "border": tk.Frame}
 
 
@@ -621,7 +756,15 @@ class ImageRangerGUI:
         self.selected_folder = tk.StringVar()
         self.image_paths = []
         self.thumbnails = []
-        self.selected_images = set()
+        
+        #self.last_applied_thumb_size = None  # ✅ Fix: initialize this to avoid attribute error
+        self.last_applied_thumb_size = self.settings.get("thumbnail_size", (120, 120))[0]
+        
+        # dynamic grid defaults
+        self.dynamic_columns = 6
+        self.tile_pad = 10  # outer padding per tile (px)
+        
+        #self.thumb_cache = {}  # {path: thumbnail_image}
 
         self.multi_face_mode = tk.StringVar(value=self.settings.get("default_mode"))
 
@@ -642,14 +785,48 @@ class ImageRangerGUI:
     
         # ✅ refresh after it's defined
         self.reference_browser.refresh_label_list(auto_select=True)
-    
+        
+        #tkimg = self.settings.thumb_cache.get(image_path)
+        #self.settings.thumb_cache.put(image_path, tkimg)
+
         # log success
         self.gui_log("✅ GUI initialized.")
 
-#    def open_settings_dialog(self):
-#        from settings_manager import SettingsDialog
-#        SettingsDialog(self.root, self.settings)
+    def clear_thumbnail_cache(self):
+        #self.thumb_cache.clear()
+        self.settings.thumb_cache.cache.clear()
+        self.gui_log("🧹 Thumbnail cache cleared.")
 
+
+    def _finish_scan(self, folder):
+        self.gui_log("✅ Scan complete. Loading thumbnails...")
+
+        def load_images_worker():
+            images = []
+            while not self.image_queue.empty():
+                if self.progress_popup.cancel_requested:
+                    self.gui_log("❌ Loading canceled by user.")
+                    break
+
+                path = self.image_queue.get()
+                images.append(path)
+                
+            def on_done():
+                print(f"[DEBUG] Set image_paths: {len(images)} images")
+
+                self.image_paths = images  # ✅ Correct: now running in GUI thread
+                self.load_images_recursive()
+                self.progress_popup.close()
+
+            self.root.after(0, on_done)
+            
+            #self.images_paths = images  # or whatever your app expects
+            #self.root.after(0, lambda: self.load_images_recursive())  # ✅ Load thumbnails in GUI thread
+            #self.root.after(0, self.progress_popup.close)  # ✅ Close popup after thumbnails are queued
+
+        threading.Thread(target=load_images_worker, daemon=True).start()
+
+   
     def open_settings_dialog(self):
         from settings_manager import SettingsDialog
         dlg = SettingsDialog(self.root, self.settings)
@@ -665,7 +842,6 @@ class ImageRangerGUI:
         self.gui_log(f"📐 Ref selection border: {self.settings.get('ref_grid_sel_border')} px, color: {self.settings.get('ref_grid_sel_color')}")
 
 
-
     def _build_menu(self):
         menubar = tk.Menu(self.root)
         settings_menu = tk.Menu(menubar, tearoff=0)
@@ -679,6 +855,7 @@ class ImageRangerGUI:
         tools.add_command(label="Export Match Audit (CSV)…", command=self.export_match_audit_csv)
         
         # ✅ define confirm_cleanup inside the method so it's in scope
+        
         def confirm_cleanup():
             days = self.settings.trash_retention_days
             confirm = messagebox.askyesno(
@@ -715,7 +892,76 @@ class ImageRangerGUI:
             relief="solid",
         )
 
-    # ---------------- background thumbnail loader ----------------
+    # ----------- background thumbnail loader ------------
+    def _current_thumb_size(self) -> int:
+        """Return the current thumbnail edge (square), and also keep last_applied_thumb_size in sync."""
+        size = int(self.settings.get("thumbnail_size", (120, 120))[0])
+        self.last_applied_thumb_size = size
+        return size
+    
+    def _compute_tile_size(self) -> int:
+        """Tile = thumb + inner padding for the border frame."""
+        return self._current_thumb_size() + 2 * 8  # 8px inner padding left+right (and top+bottom)
+    
+    def _update_dynamic_columns(self):
+        """Re-compute how many columns fit into the canvas area."""
+        try:
+            canvas_width = max(self.canvas.winfo_width(), 1)
+        except Exception:
+            canvas_width = 1000  # safe fallback during early layout
+    
+        tile_w = self._compute_tile_size()
+        # Include grid padding between tiles
+        step = tile_w + self.tile_pad
+        cols = max(1, canvas_width // step)
+        if cols != self.dynamic_columns:
+            self.dynamic_columns = cols
+            self.gui_log(f"[DEBUG] Canvas: {canvas_width}, Columns: {self.dynamic_columns}")
+    
+    def _on_canvas_resize(self, _event=None):
+        """Debounced reflow on resize."""
+        if hasattr(self, "_relayout_pending"):
+            try:
+                self.root.after_cancel(self._relayout_pending)
+            except Exception:
+                pass
+        self._relayout_pending = self.root.after(120, self._relayout)
+    
+    def _relayout(self):
+        self._update_dynamic_columns()
+        # Fast reflow: just rebuild the grid with the same images
+        self.display_thumbnails()
+
+    
+    
+    def load_thumbnail_async(self, image_path, label_widget):
+        def task():
+            cache = self.settings.thumb_cache
+            cached_thumb = cache.get(image_path)
+
+            if cached_thumb:
+                self.root.after(0, lambda: label_widget.configure(image=cached_thumb))
+                return
+
+            try:
+                im = Image.open(image_path).convert("RGB")
+                #im.thumbnail(self.settings.thumb_cache.thumb_size)
+                                
+                thumb_size = self.settings.get("thumbnail_size", (120, 120))
+                im.thumbnail(thumb_size)
+                tkimg = ImageTk.PhotoImage(im)
+                
+                # Save to cache
+                cache.put(image_path, tkimg, pil_image=im)
+
+                # Apply to UI
+                self.root.after(0, lambda: label_widget.configure(image=tkimg))
+            except Exception as e:
+                self.gui_log(f"[Thumbnail load error] {image_path}: {e}")
+
+        threading.Thread(target=task, daemon=True).start()
+
+    
     def _cancel_thumb_job(self):
         self._thumb_stop = True
 
@@ -729,14 +975,16 @@ class ImageRangerGUI:
             for p in paths:
                 if self._thumb_stop:
                     break
-                cached = _thumbcache_get(p)
+                #cached = _thumbcache_get(p)
+                cached = self.settings.thumb_cache.get(p)
                 if cached is not None:
                     self._thumb_queue.put(("ok", p, cached))
                     continue
                 try:
+                    thumb_size = self.settings.get("thumbnail_size", (120, 120))
                     with Image.open(p) as im:
-                        im = im.convert("RGB")
-                        im.thumbnail(THUMBNAIL_SIZE)
+                        im = im.convert("RGB")                                                                      
+                        im.thumbnail(thumb_size)
                         bio = im.tobytes()
                         size = im.size
                     self._thumb_queue.put(("raw", p, (bio, size)))
@@ -768,7 +1016,8 @@ class ImageRangerGUI:
                 try:
                     im = Image.frombytes("RGB", size, raw)
                     tkimg = ImageTk.PhotoImage(im)
-                    _thumbcache_put(path, tkimg)
+                    #_thumbcache_put(path, tkimg)
+                    self.settings.thumb_cache.put(path, tkimg)
                     self._add_thumbnail_widget(path, tkimg)
                 except Exception as e:
                     self.gui_log(f"[Thumb build error] {path}: {e}")
@@ -778,48 +1027,6 @@ class ImageRangerGUI:
         if not self._thumb_stop:
             self.root.after(10, self._consume_thumbs_batch)
 
-#    def _add_thumbnail_widget(self, img_path, tkimg):
-#        idx = len(self.thumbnails)
-#        self.thumbnails.append(tkimg)
-#        frame = ttk.Frame(self.scrollable_frame, borderwidth=2, relief="solid", style="TFrame")
-#        frame.grid(row=idx // 6, column=idx % 6, padx=5, pady=5)
-#        label = ttk.Label(frame, image=tkimg)
-#        label.image = tkimg
-#        label.pack()
-        
-#        def toggle_selection(p=img_path, f=frame):
-#            if p in self.selected_images:
-#                self.selected_images.remove(p)
-#                f.configure(style="TFrame")
-#            else:
-#                self.selected_images.add(p)
-#                f.configure(style="Selected.TFrame")
-#        label.bind("<Button-1>", lambda e, path=img_path, fr=frame: toggle_selection(path, fr))
-        
-        
-#    def _add_thumbnail_widget(self, img_path, tkimg):
-#        idx = len(self.thumbnails)
-#        self.thumbnails.append(tkimg)
-
-#        frame = ttk.Frame(self.scrollable_frame, borderwidth=int(self.settings.get("main_grid_sel_border")), relief="solid", style="TFrame")
-#        frame.grid(row=idx // 6, column=idx % 6, padx=5, pady=5)
-
-#        label = ttk.Label(frame, image=tkimg)
-#        label.image = tkimg
-#        label.pack()
-
-#        def toggle_selection(event=None, p=img_path, f=frame):
-#            if p in self.selected_images:
-#                self.selected_images.remove(p)
-#                f.configure(style="TFrame")
-#            else:
-#                self.selected_images.add(p)
-#                f.configure(style="Selected.TFrame")
-#            self.gui_log(f"Selected: {len(self.selected_images)} image(s)")  # debug log
-
-#        # Bind both frame and label
-#        label.bind("<Button-1>", toggle_selection)
-#        frame.bind("<Button-1>", toggle_selection)
 
     def _apply_main_selection_style(self, path, selected=False):
         """Apply border color/thickness to a main-grid thumbnail cell."""
@@ -834,57 +1041,67 @@ class ImageRangerGUI:
         else:
             border.config(highlightthickness=0)
 
-    
+
     def _add_thumbnail_widget(self, img_path, tkimg):
         idx = len(self.thumbnails)
         self.thumbnails.append(tkimg)
-
+    
         color = self.settings.get("main_grid_sel_color")
         thickness = int(self.settings.get("main_grid_sel_border"))
-
-
-        # Outer cell
-        cell = tk.Frame(self.scrollable_frame, bg="white", bd=0, highlightthickness=0)
-        cell.grid(row=idx // 6, column=idx % 6, padx=5, pady=5)
     
-        # Border layer we color via highlight*
-        border = tk.Frame(cell, bg="white", bd=0, highlightthickness=0, highlightbackground="white")
-        border.pack(fill=tk.BOTH, expand=True)
-        border.configure(highlightbackground=color, highlightthickness=thickness)
+        # ---- where to put this tile ----
+        cols = max(1, getattr(self, "dynamic_columns", 6))
+        row = idx // cols
+        col = idx % cols
     
-
-        # Image
+        # ---- tile sizing ----
+        tile_size = self._compute_tile_size()  # includes inner padding to keep the label centered
+    
+        # Outer cell (fixed-size tile)
+        cell = tk.Frame(
+            self.scrollable_frame,
+            bg="white",
+            width=tile_size,
+            height=tile_size
+        )
+        cell.grid(row=row, column=col, padx=self.tile_pad//2, pady=self.tile_pad//2)
+        cell.grid_propagate(False)  # keep fixed tile size
+    
+        # Inner "border" frame we will highlight when selected
+        border = tk.Frame(cell, bg="white", bd=0, highlightthickness=0, highlightbackground=color)
+        border.pack(expand=True, fill=tk.BOTH, padx=4, pady=4)  # centered and padded
+    
+        # Centered image
         label = tk.Label(border, image=tkimg, bg="white", bd=0)
         label.image = tkimg
-        label.pack()
+        label.pack(expand=True)
     
-        # Register nodes for later style updates
+        # Register references
         self.thumb_cells[img_path] = {"cell": cell, "border": border}
     
+        # Toggle selection
         def toggle_selection(event=None, p=img_path):
             if p in self.selected_images:
                 self.selected_images.remove(p)
                 border.config(highlightthickness=0)
             else:
                 self.selected_images.add(p)
-                border.config(
-                    highlightbackground=self.settings.get("main_grid_sel_color"),
-                    highlightthickness=int(self.settings.get("main_grid_sel_border"))
-                )
-        
-        # Click anywhere in the tile
+                border.config(highlightbackground=self.settings.get("main_grid_sel_color"),
+                              highlightthickness=int(self.settings.get("main_grid_sel_border")))
+    
         for w in (cell, border, label):
             w.bind("<Button-1>", toggle_selection)
     
-        # Initial style
+        # Initial style based on current selection set
         self._apply_main_selection_style(img_path, selected=(img_path in self.selected_images))
+
     
     def apply_main_selection_styles_after_settings(self):
         # Re-apply (e.g. after user changes color/thickness in Preferences)
         for path, node in self.thumb_cells.items():
             self._apply_main_selection_style(path, selected=(path in self.selected_images))
 
-    # -------- embeddings rebuild (debounced + threaded) ------------
+    # ----- embeddings rebuild (debounced + threaded) --------
     def rebuild_embeddings_async(self, only_label: str | None = None):
         if getattr(self, "_rebuild_pending", None):
             try:
@@ -914,28 +1131,33 @@ class ImageRangerGUI:
 
     # ---------------- layout ----------------
     def build_layout(self):
+        # === Root Layout Container ===
+        root_content = ttk.Frame(self.root)
+        root_content.pack(fill=tk.BOTH, expand=True)
+
         # === Top Bar ===
-        top_frame = ttk.Frame(self.root)
+        top_frame = ttk.Frame(root_content)
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
-    
+
+        # ✅ Folder input and control buttons
         # --- Folder Selection ---
         ttk.Label(top_frame, text="📂 Folder:").pack(side=tk.LEFT)
         ttk.Entry(top_frame, textvariable=self.selected_folder, width=60).pack(side=tk.LEFT, padx=5)
         ttk.Button(top_frame, text="Browse", command=self.browse_folder).pack(side=tk.LEFT)
-    
+
         # --- Labeling Actions ---
         ttk.Button(top_frame, text="🏷️ Label Selected", command=self.label_selected).pack(side=tk.LEFT, padx=10)
         ttk.Button(top_frame, text="➕ Add to Reference", command=self.add_selected_to_reference).pack(side=tk.LEFT, padx=6)
         ttk.Button(top_frame, text="↩ Undo", command=self.undo_last_action).pack(side=tk.LEFT, padx=6)
-    
+
         # --- Tools ---
         ttk.Button(top_frame, text="🧹 DB Health Check", command=self.db_health_check).pack(side=tk.LEFT, padx=10)
-    
+
         # --- Review Button (starts disabled) ---
         self.btn_review = ttk.Button(top_frame, text="🧭 Review Unmatched", command=self.open_review, state="disabled")
         self.btn_review.pack(side=tk.LEFT, padx=10)
-    
-        # --- Sort Button (manual ttk -> tk for color control) ---
+
+        # --- Sort Button ---
         self.btn_sort = tk.Button(
             top_frame,
             text="▶ Sort",
@@ -946,15 +1168,14 @@ class ImageRangerGUI:
             relief="raised"
         )
         self.btn_sort.pack(side=tk.RIGHT, padx=10)
-    
+
         # --- Face Matching Mode ---
         mode_frame = ttk.LabelFrame(top_frame, text="Face Matching Mode")
         mode_frame.pack(side=tk.RIGHT, padx=10)
-        ttk.Radiobutton(mode_frame, text="Best Match",  variable=self.multi_face_mode, value="best").pack(anchor=tk.W)
+        ttk.Radiobutton(mode_frame, text="Best Match", variable=self.multi_face_mode, value="best").pack(anchor=tk.W)
         ttk.Radiobutton(mode_frame, text="Multi-Match", variable=self.multi_face_mode, value="multi").pack(anchor=tk.W)
-        ttk.Radiobutton(mode_frame, text="Manual",      variable=self.multi_face_mode, value="manual").pack(anchor=tk.W)
-    
-        # --- Matching Rules Description ---
+        ttk.Radiobutton(mode_frame, text="Manual", variable=self.multi_face_mode, value="manual").pack(anchor=tk.W)
+
         rules = (
             "Rules:\n"
             "• Best: MOVE file to the single best label.\n"
@@ -962,37 +1183,79 @@ class ImageRangerGUI:
             "• Manual: placeholder for now."
         )
         tk.Label(mode_frame, text=rules, justify="left", anchor="w", fg="#444", wraplength=320).pack(anchor=tk.W, pady=(6, 2))
-    
-        # === Reference Browser Component ===
+
+        # === Zoom Bar ===
+        zoom_frame = ttk.Frame(root_content)
+        zoom_frame.pack(fill=tk.X, padx=10, pady=(4, 2))
+
+        # ... [your zoom controls here] ...
+        ttk.Label(zoom_frame, text="🧐 Zoom").pack(side=tk.LEFT)
+        ttk.Button(zoom_frame, text="-", width=3, command=self.zoom_out).pack(side=tk.LEFT, padx=(6, 2))
+
+        self.zoom_slider = ttk.Scale(
+            zoom_frame,
+            from_=60, to=240,
+            orient="horizontal",
+            command=self.on_zoom_change
+        )
+        self.zoom_slider.set(self.settings.get("thumbnail_size", (120, 120))[0])
+        self.zoom_slider.pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(zoom_frame, text="+", width=3, command=self.zoom_in).pack(side=tk.LEFT, padx=(2, 6))
+
+        # === Main Content Frame (Sidebar + Grid Area) ===
+        content_frame = ttk.Frame(root_content)
+        content_frame.pack(fill=tk.BOTH, expand=True)
+
+        # --- Left Sidebar (takes full vertical height) ---
+        self.left_sidebar = LeftSidebar(
+            master=content_frame,
+            on_folder_select=self.browse_folder,
+            on_sort_change=self.change_sort_mode,
+            on_filter_toggle=self.update_filters
+        )
+        self.left_sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 4), pady=4)
+
+        # --- Right Grid Area ---
+        grid_frame = ttk.Frame(content_frame)
+        grid_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # === Right Sidebar ===
+        self.right_sidebar = ttk.Frame(content_frame)
+        self.right_sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(4, 8), pady=4)
+
+        # --- Reference Browser ---
         self.reference_browser = ReferenceBrowser(
-            self.root,
+            grid_frame,
             gui_log=self.gui_log,
             rebuild_embeddings_async=self.rebuild_embeddings_async,
-            undo_push=self.undo_stack.push  # ✅ Corrected here
-        
+            undo_push=self.undo_stack.push
         )
-        # ✅ Now pass settings after creation (safe!)
         self.reference_browser.settings = self.settings
-        
-        self.reference_browser.pack(fill=tk.X, padx=10, pady=5)
-        print("[DEBUG] ReferenceBrowser settings attached:", self.reference_browser.settings)    
-        
-        # === Main Image Grid Scroll Area ===
-        self.main_frame = ttk.Frame(self.root)
-        self.main_frame.pack(fill=tk.BOTH, expand=True)
-    
+        self.reference_browser.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+
+        # --- Scrollable Image Grid ---
+        self.main_frame = ttk.Frame(grid_frame)
+        self.main_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
         self.canvas = tk.Canvas(self.main_frame, bg="#ffffff")
         self.scrollbar = ttk.Scrollbar(self.main_frame, orient=tk.VERTICAL, command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
-    
+
         self.scrollable_frame = ttk.Frame(self.canvas)
         self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor='nw')
         self.scrollable_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-    
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        _bind_vertical_mousewheel(self.canvas)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
 
+
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.bind("<Configure>", lambda e: self.display_thumbnails())
+
+        _bind_vertical_mousewheel(self.canvas)
+
+        print("[DEBUG] ReferenceBrowser settings attached:", self.reference_browser.settings)
+        self.build_right_sidebar()
 
     # ---------------- modal confirm ----------------
     def _confirm_modal(self, title: str, message: str) -> bool:
@@ -1023,9 +1286,153 @@ class ImageRangerGUI:
         self.root.wait_window(dlg)
         return result["ok"]
     
-    # --------------- inside class ImageRangerGUI ----------------
+    # ------------------ Right Sidebar --------------------
+    def build_right_sidebar(self):
+        ttk.Label(self.right_sidebar, text="🎯 Reference Tools", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
+
+        # Filter Entry
+        ttk.Label(self.right_sidebar, text="🔍 Label Filter:").pack(anchor="w")
+        self.ref_filter_entry = ttk.Entry(self.right_sidebar)
+        self.ref_filter_entry.pack(fill=tk.X, pady=(0, 4))
+        self.ref_filter_entry.bind("<Return>", lambda e: self.apply_reference_filter())
+
+        # Apply Filter Button
+        ttk.Button(self.right_sidebar, text="Apply", command=self.apply_reference_filter).pack(fill=tk.X)
+
+        # Refresh Button
+        ttk.Button(self.right_sidebar, text="🔄 Refresh Labels", command=self.reference_browser.refresh_label_list).pack(fill=tk.X, pady=(6, 0))
+
+        # Rebuild Embeddings Button
+        ttk.Button(self.right_sidebar, text="🧬 Rebuild Embeddings", command=self.rebuild_embeddings_async).pack(fill=tk.X, pady=(6, 0))
+
+        # Batch Tools Header
+        ttk.Label(self.right_sidebar, text="🧹 Batch Tools:", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 2))
+
+        ttk.Button(self.right_sidebar, text="🗑️ Delete Empty Labels", command=self.delete_empty_labels).pack(fill=tk.X)
+        ttk.Button(self.right_sidebar, text="✏️ Rename Selected Label", command=self.rename_selected_label).pack(fill=tk.X, pady=(4, 0))
+
+    # ---------------- Right Sidebar Supporting Methods ---
+    
+    def apply_reference_filter(self):
+        label = self.ref_filter_entry.get().strip()
+        self.reference_browser.label_filter.set(label)
+        self.reference_browser.load_images()
+        self.gui_log(f"🔍 Filter applied: {label}")
+
+    def delete_empty_labels(self):
+        from photo_sorter import delete_empty_label_folders
+        removed = delete_empty_label_folders()
+        self.gui_log(f"🧹 Removed {removed} empty label folders.")
+        self.reference_browser.refresh_label_list()
+
+    def rename_selected_label(self):
+        current = self.reference_browser.label_filter.get()
+        if not current:
+            messagebox.showinfo("Rename", "No label is currently selected.")
+            return
+        new_name = simpledialog.askstring("Rename Label", f"Rename '{current}' to:", initialvalue=current)
+        if new_name and new_name != current:
+            from photo_sorter import rename_label
+            rename_label(current, new_name)
+            self.reference_browser.refresh_label_list(auto_select=False)
+            self.reference_browser.label_filter.set(new_name)
+            self.reference_browser.load_images()
+            self.gui_log(f"✏️ Renamed label '{current}' → '{new_name}'")
 
 
+    # --------------- inside class ImageRangerGUI ---------
+    
+    def change_sort_mode(self, sort_mode: str):
+        self.settings.set("sort_mode", sort_mode)
+        self.gui_log(f"🔃 Sorting mode changed to: {sort_mode}")
+        self.refresh_image_grid()  # or scan_folder()
+
+    def update_filters(self, filters: dict):
+        self.settings.set("filter_options", filters)
+        self.gui_log(f"🔍 Filters updated: {filters}")
+        self.scan_folder(self.selected_folder.get())
+
+    
+    def zoom_in(self):
+        current = int(float(self.zoom_slider.get()))
+        new_value = min(current + 20, 240)
+        self.zoom_slider.set(new_value)
+        self._apply_zoom(new_value)
+
+    def zoom_out(self):
+        current = int(float(self.zoom_slider.get()))
+        new_value = max(current - 20, 60)
+        self.zoom_slider.set(new_value)
+        self._apply_zoom(new_value)
+
+
+    def on_zoom_change(self, val):
+        try:
+            new_size = int(float(val))
+            current_size = self.settings.get("thumbnail_size", (120, 120))[0]
+
+            # 🛑 Stop if size hasn't changed (avoid loop)
+            if new_size == current_size:
+                return
+
+            if hasattr(self, "_zoom_pending"):
+                self.root.after_cancel(self._zoom_pending)
+
+            self._zoom_pending = self.root.after(
+                200,
+                lambda: self._apply_zoom(new_size)
+            )
+
+        except Exception as e:
+            print(f"[Zoom Error] {e}")
+    
+
+
+    def _apply_zoom(self, new_size):
+        try:
+            old_size = self.last_applied_thumb_size or self.settings.get("thumbnail_size", (120, 120))[0]
+            if new_size == old_size:
+                return
+
+            self.zoom_animation_step = 0
+            self._animate_zoom(old_size, new_size)
+
+        except Exception as e:
+            print(f"[Zoom Error] Failed to apply zoom: {e}")
+
+    def _animate_zoom(self, start_size, end_size, steps=None, delay=None):
+        if steps is None:
+            steps = self.settings.get("zoom_animation_steps", 5)
+        if delay is None:
+            delay = self.settings.get("zoom_animation_delay", 30)
+        """
+        Smoothly transition from start_size to end_size over a few frames.
+        """
+        if self.zoom_animation_step >= steps:
+            # Final step: apply target size and reload grid
+            self.settings.set("thumbnail_size", (end_size, end_size))
+            self.last_applied_thumb_size = end_size
+
+            if hasattr(self.settings.thumb_cache, "clear"):
+                self.settings.thumb_cache.clear()
+                print("🧹 Thumbnail cache cleared (final).")
+
+            self.display_thumbnails()
+            return
+
+        progress = (self.zoom_animation_step + 1) / steps
+        intermediate_size = int(start_size + (end_size - start_size) * progress)
+
+        # Update zoom slider to reflect animation (optional)
+        self.zoom_slider.set(intermediate_size)
+
+        # Set thumbnail size in settings (but don't trigger reload yet)
+        self.settings.set("thumbnail_size", (intermediate_size, intermediate_size))
+        self.last_applied_thumb_size = intermediate_size
+
+        self.zoom_animation_step += 1
+        self.root.after(delay, lambda: self._animate_zoom(start_size, end_size, steps, delay))
+        
     # ---------------- health/review/browse ----------------
     def db_health_check(self):
         try:
@@ -1043,23 +1450,47 @@ class ImageRangerGUI:
         if not (self.last_unmatched_dir and os.path.isdir(self.last_unmatched_dir)):
             messagebox.showinfo("Review", "No unmatched folder to review yet.")
             return
-        MatchReviewPanel(self.root, self.last_unmatched_dir, self.last_output_dir, self.gui_log)
+        #MatchReviewPanel(self.root, self.last_unmatched_dir, self.last_output_dir, self.gui_log)
+        MatchReviewPanel(self.root, self.last_unmatched_dir, self.last_output_dir, self.gui_log, self.settings)
 
+
+    
     def browse_folder(self):
         folder = filedialog.askdirectory()
-        if folder:
-            self.selected_folder.set(folder)
-            self.gui_log(f"📂 Folder selected: {folder}")
-            self._cancel_thumb_job()
-            self.load_images_recursive(folder)
-            candidate = os.path.join(folder, "_unmatched")
-            if os.path.isdir(candidate):
-                self.last_unmatched_dir = candidate
-                self.last_output_dir = folder
-                try:
-                    self.btn_review.configure(state="normal")
-                except Exception:
-                    pass
+        if not folder:
+            return
+
+        self.selected_folder.set(folder)
+        self.gui_log(f"📂 Folder selected: {folder}")
+        self._cancel_thumb_job()
+
+        self.progress_popup = ProgressPopup(self.root)
+        self.image_queue = queue.Queue()
+
+        def scan_worker():
+            all_images = []
+            for root, dirs, files in os.walk(folder):
+                for f in files:
+                    if f.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".webp")):
+                        all_images.append(os.path.join(root, f))
+
+            total = len(all_images)
+            self.root.after(0, lambda: self.progress_popup.set_total(total))
+
+# ------------ enhanced ----------------------
+            for idx, img_path in enumerate(all_images, start=1):
+                if self.progress_popup.cancel_requested:
+                    print("Scan cancelled.")
+                    break
+
+                self.image_queue.put(img_path)
+                self.root.after(0, lambda i=idx, t=total, p=img_path:
+                            self.progress_popup.update_progress(i, t, p))
+            time.sleep(0.001)  # Simulate I/O delay
+# --------------------------------------------------    
+            self.root.after(0, lambda: self._finish_scan(folder))
+
+        threading.Thread(target=scan_worker, daemon=True).start()
 
         
     def undo_last_action(self, event=None):
@@ -1240,26 +1671,57 @@ class ImageRangerGUI:
             self.gui_log(f"Undo failed: {e}")
 
 
-
-
     # ---------------- image grid ----------------
-    def load_images_recursive(self, folder):
-        self.image_paths = []
-        exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
-        for root_dir, _, files in os.walk(folder):
-            for f in files:
-                if f.lower().endswith(exts):
-                    self.image_paths.append(os.path.join(root_dir, f))
-        self.gui_log(f"🖼️ Found {len(self.image_paths)} images. Rendering grid…")
+    def load_images_recursive(self):
+#        self.image_paths = []
+#        exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+#        for root_dir, _, files in os.walk(folder):
+#            for f in files:
+#                if f.lower().endswith(exts):
+#                    self.image_paths.append(os.path.join(root_dir, f))
+#        self.gui_log(f"🖼️ Found {len(self.image_paths)} images. Rendering grid…")
+        self.gui_log(f"🖼️ Loading {len(self.image_paths)} images into grid…")
         self.display_thumbnails()
 
+#    def display_thumbnails(self):
+#        for widget in self.scrollable_frame.winfo_children():
+#            widget.destroy()        
+#        self.thumb_cells.clear()  # ✅ prevent stale references
+#        self.thumbnails.clear()
+#        gc.collect()
+#
+#        print(f"[DEBUG] Displaying {len(self.image_paths)} thumbnails...")
+#        
+#        # 🧭 Sync zoom bar with actual setting
+#        self.zoom_slider.set(self.settings.get("thumbnail_size", (120, 120))[0])
+#
+#        self._start_thumb_job(self.image_paths)
+        
+        # (the old eager loader is left out intentionally)
+
     def display_thumbnails(self):
+        # clear existing tiles
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
+        self.thumb_cells.clear()
         self.thumbnails.clear()
         gc.collect()
+
+        # keep zoom slider in sync with actual setting
+        self.zoom_slider.set(self.settings.get("thumbnail_size", (120, 120))[0])
+        self.last_applied_thumb_size = int(self.zoom_slider.get())
+
+        # compute how many columns we can show right now
+        self._update_dynamic_columns()
+    
+        # start background building
         self._start_thumb_job(self.image_paths)
-        # (the old eager loader is left out intentionally)
+        # 🧭 Sync zoom bar with actual setting
+        self.zoom_slider.set(self.settings.get("thumbnail_size", (120, 120))[0])
+
+        self.scrollable_frame.update_idletasks()
+        self.dynamic_columns = columns  # store for use in thumbnail placement
+
 
     # ---------------- label flows ----------------
     def label_selected(self):
