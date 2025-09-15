@@ -717,12 +717,12 @@ class LeftSidebar(ttk.Frame):
 # ----RightSideBar  ---------------------------------
 
 class RightSidebar (ttk.Frame):
-    def __init__(self, parent, reference_browser, gui_log_callback,
+    def __init__(self, parent, callbacks, reference_browser, gui_log_callback,
                  on_rebuild_embeddings, on_add_to_reference, on_delete_selected_reference,
-                 on_sort, on_review_unmatched, on_undo, on_open_folder):
-
-        self.frame = ttk.Frame(parent, padding=(10, 10))
-        self.frame.pack(fill=tk.Y, expand=False, side=tk.RIGHT)
+                 on_sort, on_review_unmatched, on_undo, on_open_folder, settings=None):
+        super().__init__(parent)
+        self.callbacks = callbacks
+        self.settings = settings or {}
 
         self.reference_browser = reference_browser
         self.gui_log = gui_log_callback
@@ -734,13 +734,19 @@ class RightSidebar (ttk.Frame):
         self.on_review_unmatched = on_review_unmatched
         self.on_undo = on_undo
         self.on_open_folder = on_open_folder
-
+    
+        self.frame = ttk.Frame(parent, padding=(10, 10))
+        self.frame.pack(fill=tk.Y, expand=False, side=tk.RIGHT)
+                     
         self._build_sidebar()
 
     def _build_sidebar(self):
         self._build_label_actions()
+        self._add_spacer()
         self._build_general_tools()
+        self._add_spacer()
         self._build_reference_tools()
+        self._add_spacer()
         self._build_sorting_tools()
 
     def _build_label_actions(self):
@@ -753,6 +759,7 @@ class RightSidebar (ttk.Frame):
         self.ref_filter_entry.bind("<Return>", lambda e: self.apply_reference_filter())
 
         ttk.Button(self.frame, text="Apply", command=self.apply_reference_filter).pack(fill=tk.X)
+        ttk.Button(self.frame, text="🏷️ Create Label", command=self.create_new_label).pack(fill=tk.X)
         ttk.Button(self.frame, text="📏 Threshold Adjustment", command=self._not_implemented).pack(fill=tk.X)
         ttk.Button(self.frame, text="✏️ Rename Label", command=self.rename_selected_label).pack(fill=tk.X)
         ttk.Button(self.frame, text="🗑️ Delete Label", command=self.delete_empty_labels).pack(fill=tk.X, pady=(4, 12))
@@ -761,7 +768,7 @@ class RightSidebar (ttk.Frame):
         ttk.Label(self.frame, text="General Tools:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         ttk.Button(self.frame, text="🏥 DB Health Check", command=self._not_implemented).pack(fill=tk.X)
         ttk.Button(self.frame, text="⬅️ Undo", command=self.on_undo).pack(fill=tk.X)
-        ttk.Button(self.frame, text="Open Folder", command=self.on_open_folder).pack(fill=tk.X, pady=(4, 12))
+        ttk.Button(self.frame, text="📂 Open Folder", command=self.on_open_folder).pack(fill=tk.X, pady=(4, 12))
 
     def _build_reference_tools(self):
         ttk.Label(self.frame, text="🧰 Reference Tools", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(4, 4))
@@ -770,9 +777,12 @@ class RightSidebar (ttk.Frame):
         ttk.Button(self.frame, text="🔄 Reload", command=self.reference_browser.refresh_label_list).pack(fill=tk.X, pady=(4, 12))
 
     def _build_sorting_tools(self):
-        ttk.Label(self.frame, text="Sorting Tools", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 4))
-        ttk.Button(self.frame, text="Start Sorting", command=self.on_sort).pack(fill=tk.X)
+        ttk.Label(self.frame, text="🧪 Sorting Tools", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 4))
+        ttk.Button(self.frame, text="🚀 Start Sorting", command=self.on_sort).pack(fill=tk.X)
         ttk.Button(self.frame, text="👀 Review Unmatched", command=self.on_review_unmatched).pack(fill=tk.X)
+
+    def _add_spacer(self):
+        ttk.Label(self.frame, text="").pack(pady=4)
 
     def apply_reference_filter(self):
         label = self.ref_filter_entry.get().strip()
@@ -815,13 +825,7 @@ class ImageRangerGUI:
         self.sorting = False
         self.sort_thread = None
         self.sort_stop_event = None
-        
-        #self.thumb_cache = ThumbnailCache(
-        #    use_disk_cache=self.settings.get("use_disk_cache"),
-        #    cache_dir=self.settings.get("thumb_cache_dir"),
-        #    #max_memory_items=self.settings.get("thumb_cache_max_items#")
-        #)
-        
+                
         # button styles
         self.style.configure("SortGreen.TButton", foreground="white", background="#22aa22")
         self.style.map("SortGreen.TButton", background=[("active", "#1c8f1c")])
@@ -835,9 +839,7 @@ class ImageRangerGUI:
         self.gui_log = make_gui_logger(self.log)
 
         self.selected_images = set()         # selected file paths in main grid 
-        
         self.thumb_cells = {}                # path -> {"cell": tk.Frame, "border": tk.Frame}
-
 
         # ✅ initialize SettingsManager with GUI log
         self.settings = SettingsManager(log_fn=self.gui_log)
@@ -865,7 +867,6 @@ class ImageRangerGUI:
         self._rebuild_pending = None
         self.undo_stack = UndoStack()
         self.undo = self.undo_stack  # ✅ alias so both old and new references work
-
     
         # visuals
         self.apply_styles()
@@ -876,9 +877,6 @@ class ImageRangerGUI:
         # ✅ refresh after it's defined
         self.reference_browser.refresh_label_list(auto_select=True)
         
-        #tkimg = self.settings.thumb_cache.get(image_path)
-        #self.settings.thumb_cache.put(image_path, tkimg)
-
         # log success
         self.gui_log("✅ GUI initialized.")
 
@@ -957,10 +955,8 @@ class ImageRangerGUI:
                 messagebox.showinfo("Trash Cleanup", f"🧹 Removed {removed} old item(s) from .trash.")
                 self.gui_log(f"🧹 Cleaned .trash → {removed} item(s) deleted.")
 
-        tools.add_command(label="Clean .trash Now", command=confirm_cleanup)
-        
+        tools.add_command(label="Clean .trash Now", command=confirm_cleanup)        
         menubar.add_cascade(label="Tools", menu=tools)
-        
         self.root.config(menu=menubar)
 
 
@@ -1227,28 +1223,28 @@ class ImageRangerGUI:
         ttk.Button(top_frame, text="Browse", command=self.browse_folder).pack(side=tk.LEFT)
 
         # --- Labeling Actions ---
-        ttk.Button(top_frame, text="🏷️ Label Selected", command=self.label_selected).pack(side=tk.LEFT, padx=10)
-        ttk.Button(top_frame, text="➕ Add to Reference", command=self.add_selected_to_reference).pack(side=tk.LEFT, padx=6)
-        ttk.Button(top_frame, text="↩ Undo", command=self.undo_last_action).pack(side=tk.LEFT, padx=6)
+#        ttk.Button(top_frame, text="🏷️ Label Selected", command=self.label_selected).pack(side=tk.LEFT, padx=10)
+#        ttk.Button(top_frame, text="➕ Add to Reference", command=self.add_selected_to_reference).pack(side=tk.LEFT, padx=6)
+#        ttk.Button(top_frame, text="↩ Undo", command=self.undo_last_action).pack(side=tk.LEFT, padx=6)
 
         # --- Tools ---
-        ttk.Button(top_frame, text="🧹 DB Health Check", command=self.db_health_check).pack(side=tk.LEFT, padx=10)
+#        ttk.Button(top_frame, text="🧹 DB Health Check", command=self.db_health_check).pack(side=tk.LEFT, padx=10)
 
         # --- Review Button (starts disabled) ---
-        self.btn_review = ttk.Button(top_frame, text="🧭 Review Unmatched", command=self.open_review, state="disabled")
-        self.btn_review.pack(side=tk.LEFT, padx=10)
+#        self.btn_review = ttk.Button(top_frame, text="🧭 Review Unmatched", command=self.open_review, state="disabled")
+#        self.btn_review.pack(side=tk.LEFT, padx=10)
 
         # --- Sort Button ---
-        self.btn_sort = tk.Button(
-            top_frame,
-            text="▶ Sort",
-            bg="SystemButtonFace",
-            fg="black",
-            command=self.toggle_sort,
-            width=18,
-            relief="raised"
-        )
-        self.btn_sort.pack(side=tk.RIGHT, padx=10)
+ #       self.btn_sort = tk.Button(
+ #           top_frame,
+ #           text="▶ Sort",
+ #           bg="SystemButtonFace",
+ #           fg="black",
+ #           command=self.toggle_sort,
+ #           width=18,
+ #           relief="raised"
+ #       )
+ #       self.btn_sort.pack(side=tk.RIGHT, padx=10)
 
         # --- Face Matching Mode ---
         mode_frame = ttk.LabelFrame(top_frame, text="Face Matching Mode")
@@ -1286,24 +1282,11 @@ class ImageRangerGUI:
         # === Main Content Frame (Sidebar + Grid Area) ===
         content_frame = ttk.Frame(root_content)
         content_frame.pack(fill=tk.BOTH, expand=True)
-
-        # --- Left Sidebar (takes full vertical height) ---
-        self.left_sidebar = LeftSidebar(
-            master=content_frame,
-            on_folder_select=self.browse_folder,
-            on_sort_change=self.change_sort_mode,
-            on_filter_toggle=self.update_filters
-        )
-        self.left_sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 4), pady=4)
-
-        # --- Right Grid Area ---
+         
+        # --- Central Grid Area ---
         grid_frame = ttk.Frame(content_frame)
         grid_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        # === Right Sidebar ===
-        #self.right_sidebar = ttk.Frame(content_frame)
-        #self.right_sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(4, 8), pady=4)
-
+        
         # --- Reference Browser ---
         self.reference_browser = ReferenceBrowser(
             grid_frame,
@@ -1313,6 +1296,49 @@ class ImageRangerGUI:
         )
         self.reference_browser.settings = self.settings
         self.reference_browser.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+        
+        # --- Left Sidebar (takes full vertical height) ---
+        self.left_sidebar = LeftSidebar(
+            master=content_frame,
+            on_folder_select=self.browse_folder,
+            on_sort_change=self.change_sort_mode,
+            on_filter_toggle=self.update_filters
+        )
+        self.left_sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 4), pady=4)
+
+        # --- Right Sidebar (takes full vertical height) ---
+        self.right_sidebar = RightSidebar(
+            master=content_frame,
+            callbacks=None, # you can pass a dictionary later if needed
+
+#            reference_browser=self.reference_browser,
+#            gui_log_callback=self.gui_log,
+#            on_rebuild_embeddings=self.rebuild_embeddings_async,
+#            on_add_to_reference=self.add_to_reference,
+#            on_delete_selected_reference=self.delete_selected_reference,
+#            on_sort=self.start_sorting,
+#            on_review_unmatched=self.review_unmatched,
+#            on_undo=self.undo_last_action,
+#            on_open_folder=self.open_folder_dialog,
+#            settings=self.settings,
+ 
+            reference_browser=self.reference_browser,
+            gui_log_callback=self.gui_log,
+            on_rebuild_embeddings=self.rebuild_embeddings_async,
+            on_add_to_reference=self.add_selected_to_reference, # Done
+            on_delete_selected_reference=self.delete_selected_reference,
+            on_sort=self.start_sorting,
+            on_review_unmatched=self.review_unmatched,
+            on_undo=self.undo_last_action,
+            on_open_folder=self.open_folder_dialog,
+            settings=self.settings,
+
+        )
+        self.right_sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 4), pady=4)
+
+        # === Right Sidebar ===
+        #self.right_sidebar = ttk.Frame(content_frame)
+        #self.right_sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(4, 8), pady=4)
 
         # --- Scrollable Image Grid ---
         self.main_frame = ttk.Frame(grid_frame)
