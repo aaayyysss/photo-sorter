@@ -1,5 +1,5 @@
 # ImageRanger.py
-# Verion 6.10.3 dated 20250915
+# Verion 6.10.4 dated 20250915
 # Photo Sorter - Reference Labeling (single-file, working layout)
 # Adds:
 #   • Bottom black scrollable log console (dual: GUI + stdout)
@@ -647,6 +647,7 @@ class CreateLabelDialog(tk.Toplevel):
         self.result = None
         self.destroy()
 
+
 # ---- LeftSideBar  ---------------------------------
 
 class LeftSidebar(ttk.Frame):
@@ -712,6 +713,95 @@ class LeftSidebar(ttk.Frame):
         }
         self.on_filter_toggle(filters)
 
+
+# ----RightSideBar  ---------------------------------
+
+class RightSidebar (ttk.Frame):
+    def __init__(self, parent, reference_browser, gui_log_callback,
+                 on_rebuild_embeddings, on_add_to_reference, on_delete_selected_reference,
+                 on_sort, on_review_unmatched, on_undo, on_open_folder):
+
+        self.frame = ttk.Frame(parent, padding=(10, 10))
+        self.frame.pack(fill=tk.Y, expand=False, side=tk.RIGHT)
+
+        self.reference_browser = reference_browser
+        self.gui_log = gui_log_callback
+
+        self.on_rebuild_embeddings = on_rebuild_embeddings
+        self.on_add_to_reference = on_add_to_reference
+        self.on_delete_selected_reference = on_delete_selected_reference
+        self.on_sort = on_sort
+        self.on_review_unmatched = on_review_unmatched
+        self.on_undo = on_undo
+        self.on_open_folder = on_open_folder
+
+        self._build_sidebar()
+
+    def _build_sidebar(self):
+        self._build_label_actions()
+        self._build_general_tools()
+        self._build_reference_tools()
+        self._build_sorting_tools()
+
+    def _build_label_actions(self):
+        ttk.Label(self.frame, text="🏷️ Label Actions", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
+
+        # Label filter entry
+        ttk.Label(self.frame, text="🔍 Label Filter:").pack(anchor="w")
+        self.ref_filter_entry = ttk.Entry(self.frame)
+        self.ref_filter_entry.pack(fill=tk.X, pady=(0, 4))
+        self.ref_filter_entry.bind("<Return>", lambda e: self.apply_reference_filter())
+
+        ttk.Button(self.frame, text="Apply", command=self.apply_reference_filter).pack(fill=tk.X)
+        ttk.Button(self.frame, text="📏 Threshold Adjustment", command=self._not_implemented).pack(fill=tk.X)
+        ttk.Button(self.frame, text="✏️ Rename Label", command=self.rename_selected_label).pack(fill=tk.X)
+        ttk.Button(self.frame, text="🗑️ Delete Label", command=self.delete_empty_labels).pack(fill=tk.X, pady=(4, 12))
+
+    def _build_general_tools(self):
+        ttk.Label(self.frame, text="General Tools:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        ttk.Button(self.frame, text="🏥 DB Health Check", command=self._not_implemented).pack(fill=tk.X)
+        ttk.Button(self.frame, text="⬅️ Undo", command=self.on_undo).pack(fill=tk.X)
+        ttk.Button(self.frame, text="Open Folder", command=self.on_open_folder).pack(fill=tk.X, pady=(4, 12))
+
+    def _build_reference_tools(self):
+        ttk.Label(self.frame, text="🧰 Reference Tools", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(4, 4))
+        ttk.Button(self.frame, text="➕ Add to Reference", command=self.on_add_to_reference).pack(fill=tk.X)
+        ttk.Button(self.frame, text="🗑️ Remove Selected Reference", command=self.on_delete_selected_reference).pack(fill=tk.X)
+        ttk.Button(self.frame, text="🔄 Reload", command=self.reference_browser.refresh_label_list).pack(fill=tk.X, pady=(4, 12))
+
+    def _build_sorting_tools(self):
+        ttk.Label(self.frame, text="Sorting Tools", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 4))
+        ttk.Button(self.frame, text="Start Sorting", command=self.on_sort).pack(fill=tk.X)
+        ttk.Button(self.frame, text="👀 Review Unmatched", command=self.on_review_unmatched).pack(fill=tk.X)
+
+    def apply_reference_filter(self):
+        label = self.ref_filter_entry.get().strip()
+        self.reference_browser.label_filter.set(label)
+        self.reference_browser.load_images()
+        self.gui_log(f"🔍 Filter applied: {label}")
+
+    def delete_empty_labels(self):
+        from photo_sorter import delete_empty_label_folders
+        removed = delete_empty_label_folders()
+        self.gui_log(f"🧹 Removed {removed} empty label folders.")
+        self.reference_browser.refresh_label_list()
+
+    def rename_selected_label(self):
+        current = self.reference_browser.label_filter.get()
+        if not current:
+            messagebox.showinfo("Rename", "No label is currently selected.")
+            return
+        new_name = simpledialog.askstring("Rename Label", f"Rename '{current}' to:", initialvalue=current)
+        if new_name and new_name != current:
+            from photo_sorter import rename_label
+            rename_label(current, new_name)
+            self.reference_browser.refresh_label_list(auto_select=False)
+            self.reference_browser.label_filter.set(new_name)
+            self.reference_browser.load_images()
+            self.gui_log(f"✏️ Renamed label '{current}' → '{new_name}'")
+
+    def _not_implemented(self):
+        messagebox.showinfo("Coming Soon", "This feature is not yet implemented.")
 
 # ---- Main GUI --------------------------------------
 
@@ -1211,8 +1301,8 @@ class ImageRangerGUI:
         grid_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # === Right Sidebar ===
-        self.right_sidebar = ttk.Frame(content_frame)
-        self.right_sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(4, 8), pady=4)
+        #self.right_sidebar = ttk.Frame(content_frame)
+        #self.right_sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(4, 8), pady=4)
 
         # --- Reference Browser ---
         self.reference_browser = ReferenceBrowser(
@@ -1246,7 +1336,7 @@ class ImageRangerGUI:
         _bind_vertical_mousewheel(self.canvas)
 
         print("[DEBUG] ReferenceBrowser settings attached:", self.reference_browser.settings)
-        self.build_right_sidebar()
+        #self.build_right_sidebar()
 
     # ---------------- modal confirm ----------------
     def _confirm_modal(self, title: str, message: str) -> bool:
@@ -1278,58 +1368,58 @@ class ImageRangerGUI:
         return result["ok"]
     
     # ------------------ Right Sidebar --------------------
-    def build_right_sidebar(self):
-        ttk.Label(self.right_sidebar, text="🎯 Reference Tools", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
-
-        # Filter Entry
-        ttk.Label(self.right_sidebar, text="🔍 Label Filter:").pack(anchor="w")
-        self.ref_filter_entry = ttk.Entry(self.right_sidebar)
-        self.ref_filter_entry.pack(fill=tk.X, pady=(0, 4))
-        self.ref_filter_entry.bind("<Return>", lambda e: self.apply_reference_filter())
-
-        # Apply Filter Button
-        ttk.Button(self.right_sidebar, text="Apply", command=self.apply_reference_filter).pack(fill=tk.X)
-
-        # Refresh Button
-        ttk.Button(self.right_sidebar, text="🔄 Refresh Labels", command=self.reference_browser.refresh_label_list).pack(fill=tk.X, pady=(6, 0))
-
-        # Rebuild Embeddings Button
-        ttk.Button(self.right_sidebar, text="🧬 Rebuild Embeddings", command=self.rebuild_embeddings_async).pack(fill=tk.X, pady=(6, 0))
-
-        # Batch Tools Header
-        ttk.Label(self.right_sidebar, text="🧹 Batch Tools:", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 2))
-
-        ttk.Button(self.right_sidebar, text="🗑️ Delete Empty Labels", command=self.delete_empty_labels).pack(fill=tk.X)
-        ttk.Button(self.right_sidebar, text="✏️ Rename Selected Label", command=self.rename_selected_label).pack(fill=tk.X, pady=(4, 0))
+#    def build_right_sidebar(self):
+#        ttk.Label(self.right_sidebar, text="🎯 Reference Tools", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
+#
+#        # Filter Entry
+#        ttk.Label(self.right_sidebar, text="🔍 Label Filter:").pack(anchor="w")
+#        self.ref_filter_entry = ttk.Entry(self.right_sidebar)
+#        self.ref_filter_entry.pack(fill=tk.X, pady=(0, 4))
+#        self.ref_filter_entry.bind("<Return>", lambda e: self.apply_reference_filter())
+#
+#        # Apply Filter Button
+#        ttk.Button(self.right_sidebar, text="Apply", command=self.apply_reference_filter).pack(fill=tk.X)
+#
+#        # Refresh Button
+#        ttk.Button(self.right_sidebar, text="🔄 Refresh Labels", command=self.reference_browser.refresh_label_list).pack(fill=tk.X, pady=(6, 0))
+#
+#        # Rebuild Embeddings Button
+#        ttk.Button(self.right_sidebar, text="🧬 Rebuild Embeddings", command=self.rebuild_embeddings_async).pack(fill=tk.X, pady=(6, 0))
+#
+#        # Batch Tools Header
+#        ttk.Label(self.right_sidebar, text="🧹 Batch Tools:", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 2))
+#
+#        ttk.Button(self.right_sidebar, text="🗑️ Delete Empty Labels", command=self.delete_empty_labels).pack(fill=tk.X)
+#        ttk.Button(self.right_sidebar, text="✏️ Rename Selected Label", command=self.rename_selected_label).pack(fill=tk.X, pady=(4, 0))
 
     # ---------------- Right Sidebar Supporting Methods ---
     
-    def apply_reference_filter(self):
-        label = self.ref_filter_entry.get().strip()
-        self.reference_browser.label_filter.set(label)
-        self.reference_browser.load_images()
-        self.gui_log(f"🔍 Filter applied: {label}")
-
-    def delete_empty_labels(self):
-        from photo_sorter import delete_empty_label_folders
-        removed = delete_empty_label_folders()
-        self.gui_log(f"🧹 Removed {removed} empty label folders.")
-        self.reference_browser.refresh_label_list()
-
-    def rename_selected_label(self):
-        current = self.reference_browser.label_filter.get()
-        if not current:
-            messagebox.showinfo("Rename", "No label is currently selected.")
-            return
-        new_name = simpledialog.askstring("Rename Label", f"Rename '{current}' to:", initialvalue=current)
-        if new_name and new_name != current:
-            from photo_sorter import rename_label
-            rename_label(current, new_name)
-            self.reference_browser.refresh_label_list(auto_select=False)
-            self.reference_browser.label_filter.set(new_name)
-            self.reference_browser.load_images()
-            self.gui_log(f"✏️ Renamed label '{current}' → '{new_name}'")
-
+#    def apply_reference_filter(self):
+#        label = self.ref_filter_entry.get().strip()
+#        self.reference_browser.label_filter.set(label)
+#        self.reference_browser.load_images()
+#        self.gui_log(f"🔍 Filter applied: {label}")
+#
+#    def delete_empty_labels(self):
+#        from photo_sorter import delete_empty_label_folders
+#        removed = delete_empty_label_folders()
+#        self.gui_log(f"🧹 Removed {removed} empty label folders.")
+#        self.reference_browser.refresh_label_list()
+#
+#    def rename_selected_label(self):
+#        current = self.reference_browser.label_filter.get()
+#        if not current:
+#            messagebox.showinfo("Rename", "No label is currently selected.")
+#            return
+#       new_name = simpledialog.askstring("Rename Label", f"Rename '{current}' to:", initialvalue=current)
+#        if new_name and new_name != current:
+#            from photo_sorter import rename_label
+#            rename_label(current, new_name)
+#            self.reference_browser.refresh_label_list(auto_select=False)
+#            self.reference_browser.label_filter.set(new_name)
+#            self.reference_browser.load_images()
+#            self.gui_log(f"✏️ Renamed label '{current}' → '{new_name}'")
+#
 
     # --------------- inside class ImageRangerGUI ---------
     
@@ -1377,8 +1467,6 @@ class ImageRangerGUI:
         except Exception as e:
             print(f"[Zoom Error] {e}")
     
-
-
     def _apply_zoom(self, new_size):
         try:
             old_size = self.last_applied_thumb_size or self.settings.get("thumbnail_size", (120, 120))[0]
