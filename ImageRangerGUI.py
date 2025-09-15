@@ -1051,32 +1051,26 @@ class ImageRangerGUI:
         row = idx // self.dynamic_columns
         col = idx % self.dynamic_columns
     
-        tile_size = self.last_applied_thumb_size + 10  # include border space
+        # Sync tile size with thumbnail zoom level
+        thumb_size = self.last_applied_thumb_size  # e.g., 120, 160, etc.
+        tile_size = thumb_size + 20  # Add padding for spacing & border
     
-        # Tile container with visible border or fixed light gray bg
-        cell = tk.Frame(
-            self.scrollable_frame,
-            bg="#cccccc",  # light gray background to show tile edge
-            width=tile_size,
-            height=tile_size
-        )
-        cell.grid(row=row, column=col, padx=self.tile_pad, pady=self.tile_pad)
-        cell.grid_propagate(False)  # prevent auto-resize
+        # Create a zoom-responsive tile cell
+        cell_frame = tk.Frame(self.scrollable_frame, width=tile_size, height=tile_size, bg="white")
+        cell_frame.grid(row=row, column=col, padx=5, pady=5)
+        cell_frame.grid_propagate(False)
     
-        # Inner padding frame to host the image and highlight selection
-        border = tk.Frame(
-            cell,
-            bg="white",
-            highlightthickness=thickness,
-            highlightbackground=color
-        )
-        border.pack(expand=True, fill=tk.BOTH, padx=2, pady=2)
+        # Center the thumbnail in a bordered frame
+        border = tk.Frame(cell_frame, bg="white", bd=0,
+                          highlightthickness=thickness if img_path in self.selected_images else 0,
+                          highlightbackground=color)
+        border.place(relx=0.5, rely=0.5, anchor="center")
     
         label = tk.Label(border, image=tkimg, bg="white", bd=0)
-        label.image = tkimg
-        label.pack(expand=True)
+        label.image = tkimg  # Prevent garbage collection
+        label.pack()
     
-        self.thumb_cells[img_path] = {"cell": cell, "border": border}
+        self.thumb_cells[img_path] = {"cell": cell_frame, "border": border}
     
         def toggle_selection(event=None, p=img_path):
             if p in self.selected_images:
@@ -1086,9 +1080,10 @@ class ImageRangerGUI:
                 self.selected_images.add(p)
                 border.config(highlightbackground=color, highlightthickness=thickness)
     
-        for w in (cell, border, label):
+        for w in (cell_frame, border, label):
             w.bind("<Button-1>", toggle_selection)
     
+        # Apply selection visuals
         self._apply_main_selection_style(img_path, selected=(img_path in self.selected_images))
 
     
